@@ -1,0 +1,67 @@
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+
+# Node / Tauri
+node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/target-clean/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+desktop/test-results/
+desktop/playwright-report/
+*.tsbuildinfo
+desktop/vite.config.js
+desktop/vite.config.d.ts
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+recruit_data/
+.e2e-data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.krbackup
+logs/
+
+# Sensitive / non-source artifacts
+.playwright-cli/
+output/
+desktop/testData/
+.trae/
+
+# 真实候选人隐私数据（简历 PDF），禁止入库
+1/
+1.zip
+
+# 本地运行数据目录：含真实简历库、向量索引与 config/encryption.key，禁止入库
+.dev-data/
+.smoke-data/
+backend/.dev-data/
+backend/.e2e-data/
+backend/.acceptance-data/
+backend/.packaged-data/
+
+# 评测/实验产物（体积大且含内部数据）
+.semantic-audit-snapshot/
+.tmp-*/
+
+# 打包产物
+*.zip
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

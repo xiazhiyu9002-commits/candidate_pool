@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设置 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; letter-spacing: 0.3px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; background: var(--surface); }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+
+  .section { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .section:first-of-type { margin-top: 0; border-top: 0; padding-top: 0; }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .section-head h2 { margin: 0; font-size: 15px; font-weight: 700; }
+  .section-head .actions { display: flex; gap: 8px; }
+  .muted { color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card-body { padding: 16px; }
+
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 12px; }
+  .metric { position: relative; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .metric::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--primary); }
+  .metric small { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+  .metric strong { display: block; margin-top: 6px; font-size: 18px; color: var(--text); }
+  .metric strong.ok { color: var(--success); }
+  .metric strong.bad { color: var(--danger); }
+
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  input[type="text"], input[type="password"], input[type="number"], select, textarea {
+    width: 100%; height: 36px; border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+    padding: 0 12px; font-size: 13px; background: var(--surface); outline: none; color: var(--text); font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+  .sub-label { margin-top: 14px; font-size: 13px; font-weight: 700; color: var(--text-muted); }
+
+  .switch { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; }
+  .switch.on { background: var(--primary-soft); border-color: #dbe6fd; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .slider { position: relative; width: 42px; height: 22px; border-radius: 999px; background: #cbd5e1; flex: 0 0 auto; transition: background .2s; }
+  .slider::before { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(15,23,42,.25); transition: transform .2s; }
+  .switch input:checked + .slider { background: var(--primary); }
+  .switch input:checked + .slider::before { transform: translateX(20px); }
+  .switch .txt strong { display: block; font-size: 13px; color: var(--text); }
+  .switch .txt small { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+  .tag { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--primary-soft); color: var(--primary); }
+  .tag button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; }
+
+  .row-list { display: flex; flex-direction: column; gap: 10px; }
+  .row-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--r-md); }
+  .row-item strong { font-size: 13px; color: var(--text); }
+  .row-item small { display: block; color: var(--text-muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item is-active" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>设置</h1>
+        <div class="sub">服务配置、数据与系统健康</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>启动检查</h2>
+        <div class="actions">
+          <button class="btn btn-secondary">重新加载设置</button>
+          <button class="btn btn-secondary">运行检查</button>
+          <button class="btn btn-secondary">重启应用</button>
+        </div>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><small>数据目录</small><strong>C:\candidate_pool\data</strong></div>
+        <div class="metric"><small>LLM</small><strong class="ok">已配置</strong></div>
+        <div class="metric"><small>向量/重排</small><strong class="ok">已配置</strong></div>
+        <div class="metric"><small>BD 搜索</small><strong class="ok">已配置</strong></div>
+        <div class="metric"><small>数据库</small><strong class="ok">正常</strong></div>
+        <div class="metric"><small>原件库</small><strong class="ok">正常</strong></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>模型 API 配置</h2>
+        <div class="actions">
+          <button class="btn btn-secondary">测试 API</button>
+          <button class="btn btn-primary">保存 API 配置</button>
+        </div>
+      </div>
+      <p class="muted">配置大模型与搜索服务；DeepSeek 是默认大模型，文本/视觉模型留空时自动使用 DeepSeek，保存后需重启应用生效。</p>
+      <div class="sub-label">默认大模型（DeepSeek）</div>
+      <div class="form-grid"><input type="password" placeholder="DeepSeek API Key"></div>
+      <div class="sub-label">文本 / 视觉模型（可选）</div>
+      <div class="form-grid">
+        <select><option>文本供应商预设</option><option>DeepSeek</option><option>OpenAI</option></select>
+        <input type="password" placeholder="文本 API Key">
+        <input type="text" placeholder="文本 Base URL">
+        <input type="text" placeholder="文本模型">
+        <select><option>视觉供应商预设</option><option>DeepSeek</option></select>
+        <input type="password" placeholder="视觉 API Key">
+        <input type="text" placeholder="视觉 Base URL">
+        <input type="text" placeholder="视觉模型">
+      </div>
+      <div class="sub-label">Embedding / Rerank / 搜索</div>
+      <div class="form-grid">
+        <input type="password" placeholder="SiliconFlow API Key">
+        <input type="password" placeholder="Tavily API Key">
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>邮箱与提醒</h2>
+        <div class="actions"><button class="btn btn-primary">保存邮箱配置</button></div>
+      </div>
+      <p class="muted">配置 IMAP 收件与 SMTP 发件；保存后发送绑定确认邮件，需重启应用生效。</p>
+      <div class="form-grid">
+        <select><option>邮箱预设</option><option>QQ 邮箱</option><option>163 邮箱</option></select>
+        <label class="switch on" style="padding:0; background:none; border:0; align-items:center;"><input type="checkbox" checked><span class="slider"></span><span style="font-size:13px;">SMTP SSL 加密</span></label>
+        <input type="text" placeholder="IMAP 主机">
+        <input type="text" placeholder="IMAP 账号">
+        <input type="password" placeholder="IMAP 授权码">
+        <input type="text" placeholder="SMTP 主机">
+        <input type="number" placeholder="SMTP 端口">
+        <input type="text" placeholder="SMTP 账号">
+        <input type="password" placeholder="SMTP 授权码">
+        <input type="text" placeholder="提醒收件人邮箱">
+      </div>
+
+      <div style="margin-top: 14px;" class="switch on">
+        <input type="checkbox" checked>
+        <span class="slider"></span>
+        <span class="txt"><strong>自动拉取简历</strong><small>每 5 分钟自动从收件箱拉取简历附件；关闭后仍可手动「立即同步」</small></span>
+      </div>
+      <div style="margin-top: 12px;" class="switch">
+        <input type="checkbox">
+        <span class="slider"></span>
+        <span class="txt"><strong>每日待跟进报告</strong><small>整理推荐未反馈 / 明日面试 / 面试未反馈，每日 21:30 与次日 09:00 各发送一次</small></span>
+      </div>
+
+      <div class="sub-label">发件人白名单</div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <span class="tag">@example.com <button>×</button></span>
+        <span class="tag">hr@qq.com <button>×</button></span>
+      </div>
+      <div class="form-grid" style="margin-top: 10px;">
+        <input type="text" placeholder="添加发件人白名单（域名或完整邮箱）">
+        <button class="btn btn-secondary" style="justify-self:start;">添加</button>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top: 14px;">
+        <button class="btn btn-secondary">连接测试</button>
+        <button class="btn btn-secondary">立即同步</button>
+        <button class="btn btn-secondary">刷新同步状态</button>
+        <button class="btn btn-secondary">发送测试报告</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2>数据目录</h2></div>
+      <p class="muted">存放数据库、简历原件、检索引擎等全部本地数据的根目录。</p>
+      <div class="form-grid" style="margin-top: 10px;">
+        <input type="text" placeholder="数据目录绝对路径（留空使用默认）">
+        <button class="btn btn-primary" style="justify-self:start;">设置数据目录</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>健康检测台</h2>
+        <div class="actions">
+          <button class="btn btn-secondary">运行检测</button>
+          <button class="btn btn-secondary">导出诊断信息</button>
+        </div>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><small>数据库</small><strong class="ok">正常</strong></div>
+        <div class="metric"><small>原件库</small><strong class="ok">正常</strong></div>
+        <div class="metric"><small>检索引擎</small><strong class="ok">正常</strong></div>
+        <div class="metric"><small>磁盘</small><strong class="ok">正常</strong></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>回收站</h2>
+        <button class="btn btn-secondary">加载回收站</button>
+      </div>
+      <div class="row-list">
+        <div class="row-item"><div><strong>张伟</strong><small>候选人 · 删除于 9/1</small></div><button class="btn btn-ghost btn-xs">恢复</button></div>
+        <div class="row-item"><div><strong>高级后端工程师</strong><small>岗位 · 删除于 8/28</small></div><button class="btn btn-ghost btn-xs">恢复</button></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>备份与恢复</h2>
+        <div class="actions">
+          <button class="btn btn-secondary">加载备份</button>
+          <button class="btn btn-primary">立即备份</button>
+        </div>
+      </div>
+      <div class="form-grid" style="margin-top: 10px;">
+        <input type="text" placeholder="便携备份文件路径">
+        <input type="password" placeholder="加密口令">
+      </div>
+      <button class="btn btn-secondary" style="margin-top: 10px;">创建加密便携备份</button>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2>数据回填</h2></div>
+      <p class="muted">为存量候选人/JD 补齐学校标签与 AI 画像，幂等执行，不覆盖人工修改。</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top: 10px;">
+        <button class="btn btn-secondary">学校映射回填</button>
+        <button class="btn btn-secondary">候选人画像回填</button>
+        <button class="btn btn-secondary">JD 画像回填</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2>数据迁移</h2></div>
+      <p class="muted">把当前数据复制到新目录并校验完整性。</p>
+      <div class="form-grid" style="margin-top: 10px;">
+        <input type="text" placeholder="新数据目录（绝对路径）">
+        <button class="btn btn-secondary" style="justify-self:start;">复制并校验</button>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

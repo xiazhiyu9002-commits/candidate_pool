@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据看板 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; letter-spacing: 0.3px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card__title { font-weight: 700; font-size: 14px; }
+  .card__count { color: var(--text-muted); font-size: 12px; }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: max-content; }
+  thead th { background: #f8fafc; color: var(--text-muted); font-weight: 600; font-size: 12px; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 13px; }
+  tbody tr:hover { background: #fafbfc; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+
+  .filter-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-sm); }
+  .filter-bar .f { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
+  .filter-bar select, .filter-bar input { height: 32px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 0 10px; font-size: 13px; background: var(--surface); outline: none; }
+  .filter-bar select:focus, .filter-bar input:focus { border-color: var(--primary); }
+
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; margin: 14px 0; }
+  .metric { position: relative; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); overflow: hidden; }
+  .metric::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--primary); }
+  .metric:nth-child(2)::before { background: #0ea5e9; }
+  .metric:nth-child(3)::before { background: #8b5cf6; }
+  .metric:nth-child(4)::before { background: #16a34a; }
+  .metric:nth-child(5)::before { background: #f59e0b; }
+  .metric:nth-child(6)::before { background: #e11d48; }
+  .metric small { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+  .metric strong { display: block; margin-top: 8px; font-size: 26px; line-height: 1.2; color: var(--text); letter-spacing: -0.02em; }
+
+  .chart-box { padding: 16px; }
+  .mode-switch { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); overflow: hidden; }
+  .mode-switch button { height: 28px; padding: 0 12px; border: 0; background: var(--surface); color: var(--text-muted); font-size: 12px; cursor: pointer; }
+  .mode-switch button.is-active { background: var(--primary); color: #fff; }
+  .legend { display: flex; gap: 16px; color: var(--text-muted); font-size: 12px; margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item is-active" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>数据看板</h1>
+        <div class="sub">推荐统计与面试漏斗</div>
+      </div>
+      <div class="page-head__actions">
+        <button class="btn btn-secondary">导出 Excel</button>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <span class="f">公司
+        <select><option>全部公司</option><option>字节跳动</option><option>美团</option></select>
+      </span>
+      <span class="f">岗位
+        <select><option>全部岗位</option><option>字节跳动 · 高级后端工程师</option></select>
+      </span>
+      <span class="f">开始日期 <input type="date" value="2026-08-01"></span>
+      <span class="f">结束日期 <input type="date" value="2026-09-09"></span>
+      <button class="btn btn-primary">应用筛选</button>
+      <button class="btn btn-secondary">刷新看板</button>
+    </div>
+    <p class="hint">统计按上海自然日；导出和趋势使用最近一次已应用的筛选。</p>
+
+    <div class="metric-grid">
+      <div class="metric"><small>候选人总数</small><strong>2,384</strong></div>
+      <div class="metric"><small>每月新增候选人</small><strong>186</strong></div>
+      <div class="metric"><small>推荐总数</small><strong>412</strong></div>
+      <div class="metric"><small>offer 总数</small><strong>73</strong></div>
+      <div class="metric"><small>当前有效 offer</small><strong>18</strong></div>
+      <div class="metric"><small>已入职人数</small><strong>51</strong></div>
+    </div>
+
+    <div class="card" style="margin-top: 4px;">
+      <div class="card__head">
+        <div class="card__title">推荐量 / offer 量趋势</div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="mode-switch">
+            <button>周</button>
+            <button class="is-active">月</button>
+            <button>季度</button>
+          </div>
+          <button class="btn btn-ghost btn-xs">导出图片</button>
+        </div>
+      </div>
+      <div class="chart-box">
+        <svg viewBox="0 0 600 180" width="100%" height="180" preserveAspectRatio="none" role="img" aria-label="推荐量与 offer 量趋势图">
+          <g stroke="#e5e7eb" stroke-width="1">
+            <line x1="0" y1="20" x2="600" y2="20"/><line x1="0" y1="70" x2="600" y2="70"/>
+            <line x1="0" y1="120" x2="600" y2="120"/><line x1="0" y1="170" x2="600" y2="170"/>
+          </g>
+          <polyline fill="none" stroke="#2563eb" stroke-width="2" points="0,150 60,132 120,140 180,110 240,118 300,84 360,92 420,58 480,66 540,40 600,48"/>
+          <polyline fill="none" stroke="#16a34a" stroke-width="2" points="0,168 60,160 120,164 180,150 240,154 300,138 360,142 420,128 480,132 540,120 600,124"/>
+        </svg>
+        <div class="legend"><span><i style="background:#2563eb"></i>推荐量</span><span><i style="background:#16a34a"></i>offer 量</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card__head">
+        <div class="card__title">每岗位每轮通过率</div>
+        <button class="btn btn-ghost btn-xs">导出图片</button>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>岗位</th><th>轮次</th><th>进入</th><th>通过</th><th>未通过</th><th>待反馈</th><th>通过率</th><th>最终 offer 率</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td rowspan="2">字节跳动 · 高级后端工程师</td>
+              <td>初试</td><td>120</td><td>72</td><td>30</td><td>18</td><td>60.0%</td>
+              <td rowspan="2">12.5%</td>
+            </tr>
+            <tr><td>终面</td><td>72</td><td>24</td><td>32</td><td>16</td><td>33.3%</td></tr>
+            <tr>
+              <td>美团 · 资深产品经理</td>
+              <td>初试</td><td>88</td><td>44</td><td>28</td><td>16</td><td>50.0%</td>
+              <td>9.1%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

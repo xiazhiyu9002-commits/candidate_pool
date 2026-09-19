@@ -1,0 +1,656 @@
+{
+  "candidate_count": 100000,
+  "indexed_candidate_count": 100000,
+  "chunk_count": 300000,
+  "chunks_per_candidate": 3,
+  "embedding_dimension": 64,
+  "embedding_model": "benchmark-local-hash-64-v1",
+  "build_seconds": 18.06,
+  "synthetic": true,
+  "external_provider_calls": 0,
+  "first_request": {
+    "query": "Python 金融",
+    "elapsed_ms": 724.72,
+    "status": 200,
+    "items": 20,
+    "degraded_reasons": [],
+    "empty_reason": null
+  },
+  "hot_sequential": {
+    "requests": 12,
+    "p50_ms": 311.05,
+    "p95_ms": 518.84,
+    "max_ms": 543.2,
+    "http_errors": 0,
+    "empty_responses": 0,
+    "degraded": {}
+  },
+  "concurrent": {
+    "requests": 60,
+    "p50_ms": 460.97,
+    "p95_ms": 830.58,
+    "max_ms": 975.65,
+    "http_errors": 0,
+    "empty_responses": 0,
+    "degraded": {}
+  },
+  "concurrency": 5,
+  "deadline_degradation": [
+    {
+      "dependency": "embedding",
+      "hard_budget_ms": 200,
+      "query": "Python 金融",
+      "elapsed_ms": 191.71,
+      "status": 200,
+      "items": 0,
+      "degraded_reasons": [
+        "FTS_UNAVAILABLE",
+        "EMBEDDING_UNAVAILABLE"
+      ],
+      "empty_reason": "service_error"
+    },
+    {
+      "dependency": "reranker",
+      "hard_budget_ms": 200,
+      "query": "Python 金融",
+      "elapsed_ms": 201.45,
+      "status": 200,
+      "items": 0,
+      "degraded_reasons": [
+        "FTS_UNAVAILABLE",
+        "TIMEOUT",
+        "LIVE_VALIDATION_UNAVAILABLE"
+      ],
+      "empty_reason": "service_error"
+    }
+  ],
+  "limitations": [
+    "First request is a fresh Python process/index connection; OS disk cache was not flushed.",
+    "HTTP uses ASGI transport and real route/SQLite hydration, not TCP or desktop UI.",
+    "64-dimensional local hash embeddings and keyword reranker measure cost, not semantic quality.",
+    "Short repeated synthetic evidence; real long CVs, high-dimensional models and network provider latency are not represented.",
+    "Concurrent machine activity and OS scheduling can affect timings; no controlled hardware isolation."
+  ],
+  "samples": {
+    "hot": [
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 252.58,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 316.74,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 362.84,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 53.19,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 175.81,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 543.2,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 254.31,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 311.05,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 339.93,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 19.25,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 19.03,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 518.84,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      }
+    ],
+    "concurrent": [
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 449.38,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 542.22,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 573.05,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 86.22,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 156.79,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 766.37,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 390.22,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 460.97,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 491.45,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 52.49,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 67.11,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 757.31,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 377.46,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 455.6,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 474.43,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 52.5,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 47.65,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 760.05,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 412.29,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 523.14,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 505.93,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 94.82,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 40.91,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 794.86,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 395.31,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 495.36,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 522.63,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 74.96,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 66.49,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 767.16,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 394.31,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 467.45,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 551.49,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 70.41,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 58.37,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 852.71,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 469.36,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 625.55,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 574.11,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 56.77,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 51.99,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 975.65,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 430.27,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 495.3,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 593.48,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 90.63,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 59.58,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 857.69,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 470.15,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 510.93,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 517.52,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 73.62,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 74.89,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 830.58,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 金融",
+        "elapsed_ms": 407.88,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Java backend",
+        "elapsed_ms": 452.05,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Go warehouse",
+        "elapsed_ms": 481.33,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "本科 上海",
+        "elapsed_ms": 66.22,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "意向广州",
+        "elapsed_ms": 67.05,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      },
+      {
+        "query": "Python 排除Java",
+        "elapsed_ms": 566.24,
+        "status": 200,
+        "items": 20,
+        "degraded_reasons": [],
+        "empty_reason": null
+      }
+    ]
+  }
+}

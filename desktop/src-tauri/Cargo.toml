@@ -1,0 +1,25 @@
+[package]
+name = "recruit"
+version = "0.1.0"
+description = "KeRui local recruitment desktop application"
+authors = ["KeRui"]
+edition = "2021"
+
+[lib]
+name = "kerui_recruit_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+getrandom = "0.3"
+hex = "0.4"
+open = "5"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11", features = ["tray-icon"] }
+tauri-plugin-shell = "2.3"
+tokio = { version = "1", features = ["time"] }
+url = "2"

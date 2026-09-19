@@ -1,0 +1,276 @@
+{
+  "version": 5,
+  "default_provider_id": "deepseek",
+  "providers": {
+    "deepseek": {
+      "provider_id": "deepseek",
+      "label": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "parameter_style": "deepseek",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "deepseek-flash": {
+          "model_id": "deepseek-flash",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": false,
+          "supports_json_object": false,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "deepseek-v4-flash": {
+          "model_id": "deepseek-v4-flash",
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": true
+        },
+        "deepseek-v4-pro": {
+          "model_id": "deepseek-v4-pro",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": false,
+          "supports_json_object": false,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "deepseek-v4-flash-vision-exp": {
+          "model_id": "deepseek-v4-flash-vision-exp",
+          "roles": ["vision"],
+          "supported_reasoning_modes": ["off"],
+          "supported_reasoning_efforts": [],
+          "supports_json_schema": false,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": true
+        }
+      },
+      "recommended_models": {
+        "fast_text": "deepseek-flash",
+        "reasoning_text": "deepseek-v4-pro",
+        "vision": "deepseek-flash"
+      },
+      "help_url": "https://api-docs.deepseek.com/",
+      "key_help_url": "https://platform.deepseek.com/api_keys",
+      "subscription_warning": null,
+      "deprecated": false
+    },
+    "kimi_open": {
+      "provider_id": "kimi_open",
+      "label": "Kimi 开放平台",
+      "base_url": "https://api.moonshot.cn/v1",
+      "parameter_style": "kimi_open",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "kimi-k2.6": {
+          "model_id": "kimi-k2.6",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": false,
+          "deprecated": false
+        },
+        "kimi-k3": {
+          "model_id": "kimi-k3",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": false,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "kimi-k2.6",
+        "reasoning_text": "kimi-k3",
+        "vision": "kimi-k2.6"
+      },
+      "help_url": "https://platform.kimi.com/docs/models",
+      "key_help_url": "https://platform.kimi.com/api-key",
+      "subscription_warning": null,
+      "deprecated": false
+    },
+    "kimi_code": {
+      "provider_id": "kimi_code",
+      "label": "Kimi Code 订阅",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "parameter_style": "kimi_code",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "kimi-for-coding": {
+          "model_id": "kimi-for-coding",
+          "roles": ["fast_text", "reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "kimi-for-coding",
+        "reasoning_text": "kimi-for-coding"
+      },
+      "help_url": "https://www.kimi.com/code/docs/",
+      "key_help_url": "https://www.kimi.com/code/docs/",
+      "subscription_warning": "订阅版受会员额度与并发频率限制，后台批量解析可能触发限流；大批量任务建议使用 Kimi 开放平台。",
+      "deprecated": false
+    },
+    "qwen": {
+      "provider_id": "qwen",
+      "label": "通义千问",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "parameter_style": "qwen",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "qwen3.8-flash": {
+          "model_id": "qwen3.8-flash",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "qwen3.8-max": {
+          "model_id": "qwen3.8-max",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "qwen3.8-flash",
+        "reasoning_text": "qwen3.8-max",
+        "vision": "qwen3.8-flash"
+      },
+      "help_url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions",
+      "key_help_url": "https://help.aliyun.com/zh/model-studio/get-api-key",
+      "subscription_warning": null,
+      "deprecated": false
+    },
+    "zhipu": {
+      "provider_id": "zhipu",
+      "label": "智谱 GLM",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "parameter_style": "zhipu",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "glm-4.7-flashx": {
+          "model_id": "glm-4.7-flashx",
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "glm-5.3": {
+          "model_id": "glm-5.3",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "glm-4v-flash": {
+          "model_id": "glm-4v-flash",
+          "roles": ["vision"],
+          "supported_reasoning_modes": ["off"],
+          "supported_reasoning_efforts": [],
+          "supports_json_schema": false,
+          "supports_json_object": false,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "glm-4.7-flashx",
+        "reasoning_text": "glm-5.3",
+        "vision": "glm-4v-flash"
+      },
+      "help_url": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
+      "key_help_url": "https://docs.bigmodel.cn/cn/guide/start/apikey",
+      "subscription_warning": null,
+      "deprecated": false
+    },
+    "siliconflow": {
+      "provider_id": "siliconflow",
+      "label": "硅基流动",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "parameter_style": "siliconflow",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "deepseek-ai/DeepSeek-V4-Flash": {
+          "model_id": "deepseek-ai/DeepSeek-V4-Flash",
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "deepseek-ai/DeepSeek-V4-Pro": {
+          "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "zai-org/GLM-4.5V": {
+          "model_id": "zai-org/GLM-4.5V",
+          "roles": ["vision"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": [],
+          "supports_json_schema": false,
+          "supports_json_object": false,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "deepseek-ai/DeepSeek-V4-Flash",
+        "reasoning_text": "deepseek-ai/DeepSeek-V4-Pro",
+        "vision": "zai-org/GLM-4.5V"
+      },
+      "help_url": "https://docs.siliconflow.cn/docs/api/chat-completions-post",
+      "key_help_url": "https://cloud.siliconflow.cn/account/ak",
+      "subscription_warning": null,
+      "deprecated": false
+    },
+    "custom_openai": {
+      "provider_id": "custom_openai",
+      "label": "自定义 OpenAI 兼容",
+      "base_url": "",
+      "parameter_style": "standard",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {},
+      "recommended_models": {},
+      "help_url": "",
+      "key_help_url": "",
+      "subscription_warning": null,
+      "deprecated": false
+    }
+  }
+}

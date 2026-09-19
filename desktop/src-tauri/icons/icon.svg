@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- 深灰底 -->
+  <rect width="512" height="512" rx="112" fill="#3a3a3a"/>
+  <!-- 白色 R：左竖臂 + 右半圆环头 + 斜腿 -->
+  <g fill="#ffffff">
+    <rect x="112" y="96" width="88" height="320" rx="20"/>
+    <path d="M200 96 A120 120 0 0 1 200 336 L200 280 A64 64 0 0 0 200 152 Z"/>
+    <path d="M200 320 L448 416 L376 416 L200 360 Z"/>
+  </g>
+</svg>

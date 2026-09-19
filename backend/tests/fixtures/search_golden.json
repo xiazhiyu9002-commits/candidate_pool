@@ -1,0 +1,18 @@
+{
+  "documents": [
+    {"id": "java-backend", "text": "Java Spring Boot 后端 支付系统"},
+    {"id": "javascript-frontend", "text": "JavaScript React 前端"},
+    {"id": "kubernetes-platform", "text": "Kubernetes 容器平台 云原生"},
+    {"id": "cpp-engine", "text": "C++ 搜索引擎"},
+    {"id": "csharp-dotnet", "text": "C# .NET 企业应用"},
+    {"id": "node-backend", "text": "Node.js 服务端"}
+  ],
+  "queries": [
+    {"query": "Java", "relevance": {"java-backend": 3}},
+    {"query": "JS", "relevance": {"javascript-frontend": 3}},
+    {"query": "k8s", "relevance": {"kubernetes-platform": 3}},
+    {"query": "C++", "relevance": {"cpp-engine": 3}},
+    {"query": "C# .NET", "relevance": {"csharp-dotnet": 3}},
+    {"query": "Node.js 后端", "relevance": {"node-backend": 3}}
+  ]
+}

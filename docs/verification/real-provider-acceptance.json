@@ -1,0 +1,34 @@
+{
+  "date": "2026-08-30",
+  "contains_secrets": false,
+  "providers": {
+    "deepseek": {
+      "model": "deepseek-v4-flash",
+      "authentication": "passed",
+      "structured_resume_parse": "passed",
+      "vision_ocr": "not_run"
+    },
+    "siliconflow_embedding": {
+      "model": "BAAI/bge-m3",
+      "authentication": "passed",
+      "inference": "blocked",
+      "http_status": 402,
+      "blocker": "insufficient_balance"
+    },
+    "siliconflow_reranker": {
+      "model": "BAAI/bge-reranker-v2-m3",
+      "authentication": "passed",
+      "inference": "blocked",
+      "http_status": 402,
+      "blocker": "insufficient_balance"
+    },
+    "tavily": {
+      "authentication": "passed",
+      "search": "passed"
+    }
+  },
+  "remote_full_corpus": {
+    "status": "not_run",
+    "blocker": "siliconflow_inference_unavailable"
+  }
+}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapping · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; letter-spacing: 0.3px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-danger { background: var(--surface); color: var(--danger); border-color: var(--border-strong); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; color: var(--text-muted); font-size: 12px; margin-bottom: 3px; }
+  .field .value { font-size: 13px; }
+
+  .help { margin-bottom: 14px; padding: 10px 14px; background: var(--primary-soft); border: 1px solid #dbe6fd; border-radius: var(--r-md); color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+  .help strong { color: var(--primary-hover); }
+
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .toolbar input { height: 32px; width: 220px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 0 10px; font-size: 13px; outline: none; }
+  .toolbar input:focus { border-color: var(--primary); }
+
+  .mapping-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); padding: 14px; }
+  .panel h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .company-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); font-weight: 600; cursor: pointer; }
+  .company-item.is-active { background: var(--primary-soft); color: var(--primary); }
+  .company-item .act { color: var(--text-faint); font-size: 11px; font-weight: 400; }
+  .panel .filter { width: 100%; height: 32px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 0 10px; font-size: 13px; margin-bottom: 8px; outline: none; }
+
+  /* 脑图 */
+  .mindmap { min-height: 460px; overflow: auto; background: #fbfcfe; border-radius: var(--r-md); padding: 20px; }
+  .mm-root { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .mm-node { padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface); cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .mm-node:hover { border-color: var(--primary); }
+  .mm-node.is-selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
+  .mm-node--company { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 700; border-radius: 999px; padding: 8px 18px; }
+  .mm-node--dept { background: var(--primary-soft); border-color: #dbe6fd; color: var(--primary-hover); font-weight: 600; }
+  .mm-node small { display: block; color: var(--text-faint); font-size: 11px; font-weight: 400; }
+  .mm-branch { display: flex; gap: 40px; margin-top: 8px; }
+  .mm-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .mm-vline { width: 1px; height: 16px; background: var(--border-strong); }
+  .mm-hline { height: 1px; width: 100%; background: var(--border-strong); }
+
+  .tag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--success-soft); color: var(--success); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item is-active" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>Mapping</h1>
+        <div class="sub">组织架构与关键人才地图</div>
+      </div>
+    </div>
+
+    <div class="help"><strong>操作：</strong>Tab 新增子节点 · Enter 新增同级 · 「＋人员」在部门下加人 · 双击/F2 改名 · 拖拽调整层级 · Ctrl/⌘+Z 撤销 · Ctrl/⌘+滚轮缩放</div>
+
+    <div class="toolbar">
+      <input placeholder="公司名称，如：字节跳动">
+      <button class="btn btn-primary">新建公司</button>
+      <button class="btn btn-secondary">刷新公司</button>
+      <button class="btn btn-secondary">＋人员</button>
+      <button class="btn btn-ghost btn-xs">撤销</button>
+      <button class="btn btn-ghost btn-xs">重做</button>
+      <button class="btn btn-ghost btn-xs">内部 Excel</button>
+      <button class="btn btn-ghost btn-xs">客户 Excel</button>
+      <button class="btn btn-ghost btn-xs">架构图 PDF</button>
+    </div>
+
+    <div class="mapping-grid">
+      <div class="panel">
+        <h3>公司</h3>
+        <div class="company-item is-active">字节跳动 <span class="act">原文</span></div>
+        <div class="company-item">美团 <span class="act">原文</span></div>
+        <div class="company-item">腾讯 <span class="act">原文</span></div>
+        <h3 style="margin-top: 18px;">搜索</h3>
+        <input class="filter" placeholder="姓名 / 岗位 / 职级">
+        <h3>筛选</h3>
+        <select class="filter"><option>全部类型</option><option>部门</option><option>人员</option></select>
+        <label class="hint" style="display:flex; align-items:center; gap:6px;"><input type="checkbox"> 仅核心岗位</label>
+      </div>
+
+      <div class="panel">
+        <h3>组织架构</h3>
+        <div class="mindmap">
+          <div class="mm-root">
+            <div class="mm-node mm-node--company">字节跳动</div>
+            <div class="mm-vline"></div>
+            <div class="mm-branch" style="width: 100%;">
+              <div class="mm-col" style="flex:1;">
+                <div class="mm-hline"></div>
+                <div class="mm-node mm-node--dept">基础架构</div>
+                <div class="mm-vline"></div>
+                <div class="mm-col">
+                  <div class="mm-node is-selected">张伟 <small>后端工程师</small></div>
+                  <div class="mm-node">王强 <small>算法工程师</small></div>
+                </div>
+              </div>
+              <div class="mm-col" style="flex:1;">
+                <div class="mm-hline"></div>
+                <div class="mm-node mm-node--dept">产品部</div>
+                <div class="mm-vline"></div>
+                <div class="mm-col">
+                  <div class="mm-node">李娜 <small>产品经理</small></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>节点详情</h3>
+        <div class="field"><label>姓名</label><div class="value">张伟</div></div>
+        <div class="field"><label>职位</label><div class="value">后端工程师</div></div>
+        <div class="field"><label>花名</label><div class="value">—</div></div>
+        <div class="field"><label>所属部门</label><div class="value">基础架构</div></div>
+        <div class="field"><label>汇报给</label><div class="value">—</div></div>
+        <div class="field"><label>绑定候选人</label><div class="value"><span class="tag">已绑定 · 张伟</span></div></div>
+        <div style="display: flex; gap: 8px; margin-top: 14px;">
+          <button class="btn btn-secondary btn-xs">绑定候选人</button>
+          <button class="btn btn-ghost btn-xs">预览简历</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

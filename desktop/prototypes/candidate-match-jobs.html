@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>人选匹配岗位 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 12px; box-shadow: var(--shadow-sm); }
+  .search { flex: 1; display: flex; align-items: center; gap: 8px; }
+  .search input { flex: 1; height: 32px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 0 10px; font-size: 13px; outline: none; }
+  .search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+  .mode-switch { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); overflow: hidden; }
+  .mode-switch button { height: 32px; padding: 0 12px; border: 0; background: var(--surface); color: var(--text-muted); font-size: 13px; cursor: pointer; }
+  .mode-switch button.is-active { background: var(--primary); color: #fff; }
+  .toolbar__divider { width: 1px; height: 20px; background: var(--border); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card__title { font-weight: 700; font-size: 14px; }
+  .card__count { color: var(--text-muted); font-size: 12px; }
+  .card__tools { display: flex; gap: 8px; }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: max-content; }
+  thead th { background: #f8fafc; color: var(--text-muted); font-weight: 600; font-size: 12px; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 13px; }
+  tbody tr:hover { background: #fafbfc; }
+  tbody tr:last-child td { border-bottom: 0; }
+  th.col-name, td.col-name { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 140px; font-weight: 600; }
+  thead th.col-name { background: #f8fafc; z-index: 2; }
+  th.col-actions, td.col-actions { position: sticky; right: 0; background: var(--surface); z-index: 1; box-shadow: -8px 0 12px -10px rgba(15,23,42,0.18); }
+  thead th.col-actions { background: #f8fafc; z-index: 2; }
+  .profile-text { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; color: var(--text-muted); }
+
+  /* 抽屉 */
+  .drawer-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.4); z-index: 1100; display: flex; justify-content: flex-end; }
+  .drawer { background: var(--surface); width: min(760px, calc(100% - 220px)); height: 100%; display: flex; flex-direction: column; box-shadow: -16px 0 48px rgba(0,0,0,0.18); }
+  .drawer__header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .drawer__header h2 { font-size: 17px; color: var(--text); margin: 0; }
+  .drawer__header small { color: var(--text-muted); }
+  .drawer__body { flex: 1; overflow: auto; padding: 16px 20px; }
+  .drawer-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .drawer-table th, .drawer-table td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .drawer-table thead th { color: var(--text-muted); font-weight: 600; background: #f8fafc; position: sticky; top: 0; }
+  .profile-cell { max-width: 340px; white-space: normal; color: var(--text-muted); line-height: 1.6; }
+
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item is-active" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>人才库</h1>
+        <div class="sub">共 2,384 位候选人</div>
+      </div>
+      <div class="page-head__actions">
+        <button class="btn btn-secondary">文件夹导入</button>
+        <button class="btn btn-primary">上传简历</button>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search">
+        <input placeholder="搜索技能、公司、职位或自然语言条件…" />
+        <button class="btn btn-primary">搜索</button>
+      </div>
+      <div class="mode-switch">
+        <button class="is-active">关键词</button>
+        <button>向量</button>
+        <button>混合</button>
+      </div>
+      <div class="toolbar__divider"></div>
+      <button class="btn btn-secondary">精确筛选</button>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">候选人 <span class="card__count">2,384 条</span></div>
+        <div class="card__tools">
+          <button class="btn btn-ghost btn-xs">列设置</button>
+          <button class="btn btn-ghost btn-xs">显示候选人</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th class="col-name">姓名</th><th>电话</th><th>学校学历</th><th>公司</th><th>职位</th><th class="col-actions">操作</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="col-name"><strong>张伟</strong></td>
+              <td>138****3820</td>
+              <td>北京大学 · 硕士</td>
+              <td>字节跳动</td>
+              <td>后端工程师</td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+              </td>
+            </tr>
+            <tr>
+              <td class="col-name"><strong>李娜</strong></td>
+              <td>139****2211</td>
+              <td>复旦大学 · 本科</td>
+              <td>美团</td>
+              <td>产品经理</td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+              </td>
+            </tr>
+            <tr>
+              <td class="col-name"><strong>王强</strong></td>
+              <td>137****9034</td>
+              <td>浙江大学 · 硕士</td>
+              <td>阿里巴巴</td>
+              <td>算法工程师</td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 人选匹配岗位：抽屉 -->
+<div class="drawer-backdrop" id="drawerBackdrop">
+  <aside class="drawer" role="dialog" aria-modal="true" aria-label="人选匹配岗位">
+    <div class="drawer__header">
+      <div>
+        <h2>张伟</h2>
+        <small>匹配到 3 个岗位</small>
+      </div>
+      <button class="btn btn-secondary btn-xs" id="closeDrawer">关闭</button>
+    </div>
+    <div class="drawer__body">
+      <table class="drawer-table">
+        <thead>
+          <tr><th>岗位</th><th>公司</th><th>候选人画像</th><th>建流程</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>高级后端工程师</strong></td>
+            <td>字节跳动</td>
+            <td class="profile-cell">5 年以上后端研发经验，精通 Java 或 Go，深入理解高并发与分布式系统设计；有风控、支付或金融科技背景者优先。</td>
+            <td><button class="btn btn-secondary btn-xs">建流程</button></td>
+          </tr>
+          <tr>
+            <td><strong>后端技术专家</strong></td>
+            <td>阿里巴巴</td>
+            <td class="profile-cell">精通 Java 及微服务架构，有大规模分布式系统实践经验，熟悉消息中间件与容器化部署，具备技术团队管理能力。</td>
+            <td><button class="btn btn-secondary btn-xs">建流程</button></td>
+          </tr>
+          <tr>
+            <td><strong>资深 Java 工程师</strong></td>
+            <td>腾讯</td>
+            <td class="profile-cell">8 年以上 Java 研发经验，熟悉高可用架构、性能调优与常见中间件，有支付或金融业务背景者优先。</td>
+            <td><button class="btn btn-secondary btn-xs">建流程</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </aside>
+</div>
+
+<script>
+  document.getElementById("closeDrawer").addEventListener("click", () => {
+    document.getElementById("drawerBackdrop").style.display = "none";
+  });
+</script>
+</body>
+</html>

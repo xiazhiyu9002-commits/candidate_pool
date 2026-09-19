@@ -1,0 +1,514 @@
+{
+  "scope": "keyword + exact-filter deterministic baseline (AI calls = 0)",
+  "vector/混合/双向匹配": "依赖真实 embedding/reranker，未包含",
+  "filter_cases": [
+    {
+      "case": "min_years>=10",
+      "expected": 64,
+      "returned": 64,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 81.61,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_years>=5",
+      "expected": 92,
+      "returned": 92,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 55.58,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "max_years<=8",
+      "expected": 28,
+      "returned": 28,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 36.51,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "max_years<=3",
+      "expected": 2,
+      "returned": 2,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 32.58,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_years>=20（边界：极少）",
+      "expected": 5,
+      "returned": 5,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 64.64,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_years>=80（边界：应无结果）",
+      "expected": 0,
+      "returned": 0,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 35.45,
+      "empty_reason": "no_match",
+      "degraded": []
+    },
+    {
+      "case": "highest_degree>=MASTER",
+      "expected": 54,
+      "returned": 54,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 53.72,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "highest_degree>=BACHELOR",
+      "expected": 98,
+      "returned": 98,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 53.14,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "highest_degree>=DOCTORATE",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 39.09,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_years>=5 且 >=MASTER",
+      "expected": 50,
+      "returned": 50,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 45.73,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_years>=10 且 >=BACHELOR",
+      "expected": 64,
+      "returned": 64,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 39.44,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "5<=years<=10（范围）",
+      "expected": 35,
+      "returned": 35,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 41.29,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "location=上海（现居）",
+      "expected": 23,
+      "returned": 23,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 57.76,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "location=北京（现居）",
+      "expected": 13,
+      "returned": 13,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 72.73,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "location=杭州（现居）",
+      "expected": 5,
+      "returned": 5,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 49.11,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "location=深圳（现居）",
+      "expected": 8,
+      "returned": 8,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 154.22,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "min_age>=30",
+      "expected": 84,
+      "returned": 84,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 95.36,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "max_age<=35",
+      "expected": 51,
+      "returned": 51,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 85.95,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "30<=age<=40",
+      "expected": 74,
+      "returned": 74,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 57.14,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "max_qs_rank<=50",
+      "expected": 3,
+      "returned": 3,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 69.99,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "max_qs_rank<=100",
+      "expected": 5,
+      "returned": 5,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 63.0,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "school_level>=985",
+      "expected": 38,
+      "returned": 38,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 67.18,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "school_level>=211",
+      "expected": 56,
+      "returned": 56,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 44.05,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "school_level>=双一流",
+      "expected": 58,
+      "returned": 58,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 44.8,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "preferred_location=上海（意向）",
+      "expected": 17,
+      "returned": 17,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 37.4,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "preferred_location=北京（意向）",
+      "expected": 2,
+      "returned": 2,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 25.6,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "name=周晨",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 43.52,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "name=徐猛",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 28.32,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "name=江超",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 59.28,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "company=腾讯",
+      "expected": 12,
+      "returned": 12,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 75.25,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "company=阿里巴巴",
+      "expected": 16,
+      "returned": 16,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 50.46,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "company=太保",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 45.89,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "school=武汉大学",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 32.04,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "school=浙江大学",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 37.36,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "title=工程师",
+      "expected": 58,
+      "returned": 58,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 51.84,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "title=技术专家",
+      "expected": 4,
+      "returned": 4,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 39.88,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "title=架构师",
+      "expected": 6,
+      "returned": 6,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 48.83,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "exclude_skills=Java",
+      "expected": 69,
+      "returned": 69,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 116.32,
+      "empty_reason": null,
+      "degraded": []
+    },
+    {
+      "case": "exclude_skills=Python",
+      "expected": 57,
+      "returned": 57,
+      "missing": [],
+      "extra": [],
+      "correct": true,
+      "elapsed_ms": 104.32,
+      "empty_reason": null,
+      "degraded": []
+    }
+  ],
+  "keyword_lexical_checks": [
+    {
+      "case": "Java 词边界（不误认仅 JavaScript）",
+      "returned": 29,
+      "false_positive_without_java": [],
+      "ok": true
+    },
+    {
+      "case": "JS / JavaScript 别名等价",
+      "js": 13,
+      "javascript": 13,
+      "equal": true
+    },
+    {
+      "case": "k8s / Kubernetes 别名等价",
+      "k8s": 12,
+      "kubernetes": 12,
+      "equal": true
+    },
+    {
+      "case": "C++ 词边界",
+      "returned": 10,
+      "false_positive": [],
+      "ok": true
+    },
+    {
+      "case": "C# 词边界",
+      "returned": 4,
+      "false_positive": [],
+      "ok": true
+    },
+    {
+      "case": ".NET 词边界",
+      "returned": 2,
+      "false_positive": [],
+      "ok": true
+    },
+    {
+      "case": "Node.js 词边界",
+      "returned": 8,
+      "false_positive": [],
+      "ok": true
+    },
+    {
+      "case": "AND 集合语义（Java 且 Python）",
+      "returned": 19,
+      "expected_intersection": 19,
+      "equal": true
+    },
+    {
+      "case": "OR 集合语义（Java 或 Python）",
+      "returned": 51,
+      "expected_union": 51,
+      "equal": true
+    }
+  ],
+  "fault_injection_checks": [
+    {
+      "case": "关键词检索在 embedding/reranker 故障时仍可用",
+      "items": 29,
+      "empty_reason": null,
+      "ok": true
+    },
+    {
+      "case": "精确筛选在 embedding/reranker 故障时仍可用",
+      "items": 10,
+      "empty_reason": null,
+      "ok": true
+    }
+  ],
+  "filter_all_correct": true,
+  "keyword_all_ok": true,
+  "fault_all_ok": true,
+  "degree_order": [
+    "ASSOCIATE",
+    "BACHELOR",
+    "MASTER",
+    "DOCTORATE"
+  ]
+}

@@ -1,0 +1,1 @@
+"""External capability provider abstractions."""

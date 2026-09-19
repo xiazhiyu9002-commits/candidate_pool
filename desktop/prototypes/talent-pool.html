@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>人才库 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --surface: #ffffff;
+    --text: #1f2933;
+    --text-muted: #6b7280;
+    --text-faint: #9aa1ab;
+    --border: #e5e7eb;
+    --border-strong: #d3d8de;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --primary-soft: #eef3fe;
+    --success: #16a34a;
+    --success-soft: #ecfdf3;
+    --warning: #b45309;
+    --warning-soft: #fef3e7;
+    --danger: #dc2626;
+    --danger-soft: #fef2f2;
+    --nav-bg: #1e293b;
+    --nav-text: #94a3b8;
+    --nav-active-bg: #263449;
+    --nav-active-text: #e2e8f0;
+    --nav-accent: #2563eb;
+    --r-sm: 6px;
+    --r-md: 8px;
+    --r-lg: 10px;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+
+  .shell { display: flex; min-height: 100vh; }
+
+  /* ===== 左侧导航 ===== */
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; letter-spacing: 0.3px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+
+  /* ===== 主内容 ===== */
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+
+  /* 顶部标题栏 */
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+
+  /* ===== 按钮 ===== */
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-danger { background: var(--surface); color: var(--danger); border-color: var(--border-strong); }
+  .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+
+  /* ===== 工具栏 ===== */
+  .toolbar { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 12px; box-shadow: var(--shadow-sm); }
+  .search { flex: 1; display: flex; align-items: center; gap: 8px; }
+  .search input { flex: 1; height: 32px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 0 10px; font-size: 13px; outline: none; }
+  .search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+  .mode-switch { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); overflow: hidden; }
+  .mode-switch button { height: 32px; padding: 0 12px; border: 0; background: var(--surface); color: var(--text-muted); font-size: 13px; cursor: pointer; }
+  .mode-switch button.is-active { background: var(--primary); color: #fff; }
+  .toolbar__divider { width: 1px; height: 20px; background: var(--border); }
+
+  /* ===== 表格 ===== */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card__title { font-weight: 700; font-size: 14px; }
+  .card__count { color: var(--text-muted); font-size: 12px; }
+  .card__tools { display: flex; gap: 8px; }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: max-content; }
+  thead th { position: sticky; top: 0; background: #f8fafc; color: var(--text-muted); font-weight: 600; font-size: 12px; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 13px; }
+  tbody tr:hover { background: #fafbfc; }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  th.col-name, td.col-name { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 140px; font-weight: 600; }
+  thead th.col-name { background: #f8fafc; z-index: 2; }
+  th.col-actions, td.col-actions { position: sticky; right: 0; background: var(--surface); z-index: 1; box-shadow: -8px 0 12px -10px rgba(15,23,42,0.18); }
+  thead th.col-actions { background: #f8fafc; z-index: 2; }
+
+  .muted-cell { color: var(--text-faint); }
+
+  /* 状态徽标 */
+  .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge--ai { color: var(--primary); background: var(--primary-soft); }
+  .badge--manual { color: var(--warning); background: var(--warning-soft); }
+  .badge--stale { color: var(--danger); background: var(--danger-soft); }
+  .badge--success { color: var(--success); background: var(--success-soft); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  /* 画像截断 */
+  .profile-text { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; color: var(--text-muted); }
+
+  /* 更多菜单 */
+  .more { position: relative; }
+  .more__menu { display: none; position: absolute; right: 0; top: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-md); z-index: 10; min-width: 120px; padding: 4px; }
+  .more:hover .more__menu { display: block; }
+  .more__menu button { display: flex; width: 100%; border: 0; background: transparent; padding: 7px 10px; font-size: 12px; border-radius: var(--r-sm); cursor: pointer; text-align: left; }
+  .more__menu button:hover { background: var(--primary-soft); color: var(--primary); }
+  .more__menu button.danger { color: var(--danger); }
+  .more__menu button.danger:hover { background: var(--danger-soft); }
+
+  /* 分页 */
+  .pagination { display: flex; align-items: center; gap: 6px; padding: 12px 16px; }
+  .pagination .page { min-width: 28px; height: 28px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: 12px; }
+  .pagination .page.is-current { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .pagination .spacer { color: var(--text-faint); }
+
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item is-active" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>人才库</h1>
+        <div class="sub">共 2,384 位候选人</div>
+      </div>
+      <div class="page-head__actions">
+        <button class="btn btn-secondary">文件夹导入</button>
+        <button class="btn btn-primary">上传简历</button>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search">
+        <input placeholder="搜索技能、公司、职位或自然语言条件…" />
+        <button class="btn btn-primary">搜索</button>
+      </div>
+      <div class="mode-switch">
+        <button class="is-active">关键词</button>
+        <button>向量</button>
+        <button>混合</button>
+      </div>
+      <div class="toolbar__divider"></div>
+      <button class="btn btn-secondary">精确筛选</button>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">候选人 <span class="card__count">2,384 条搜索结果</span></div>
+        <div class="card__tools">
+          <button class="btn btn-ghost btn-xs">列设置</button>
+          <button class="btn btn-ghost btn-xs">关闭结果</button>
+        </div>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-name">姓名</th>
+              <th>电话</th>
+              <th>学校学历</th>
+              <th>年龄</th>
+              <th>所在城市</th>
+              <th>工作年限</th>
+              <th>公司</th>
+              <th>职位</th>
+              <th>AI 画像</th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="col-name">张伟</td>
+              <td>138****3820</td>
+              <td>北京大学 · 硕士</td>
+              <td>29</td>
+              <td>北京</td>
+              <td>6</td>
+              <td>字节跳动</td>
+              <td>后端工程师</td>
+              <td><span class="profile-text" title="…">资深后端工程师，主导高并发风控平台建设，擅长 Java/Go 与分布式架构…</span> <span class="badge badge--ai"><span class="dot"></span>AI 生成</span></td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+                <span class="more">
+                  <button class="btn btn-ghost btn-xs">更多 ▾</button>
+                  <div class="more__menu">
+                    <button>下载</button>
+                    <button>强制 OCR</button>
+                    <button class="danger">删除</button>
+                  </div>
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td class="col-name">李娜</td>
+              <td>139****2211</td>
+              <td>复旦大学 · 本科</td>
+              <td>27</td>
+              <td>上海</td>
+              <td>5</td>
+              <td>美团</td>
+              <td>产品经理</td>
+              <td><span class="profile-text">B 端交易产品负责人，擅长用户增长与数据驱动决策…</span> <span class="badge badge--manual"><span class="dot"></span>人工编辑</span></td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+                <span class="more">
+                  <button class="btn btn-ghost btn-xs">更多 ▾</button>
+                  <div class="more__menu">
+                    <button>下载</button>
+                    <button>强制 OCR</button>
+                    <button class="danger">删除</button>
+                  </div>
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td class="col-name">王强</td>
+              <td>137****9034</td>
+              <td>浙江大学 · 硕士</td>
+              <td>31</td>
+              <td>杭州</td>
+              <td>8</td>
+              <td>阿里巴巴</td>
+              <td>算法工程师</td>
+              <td><span class="profile-text">机器学习算法专家，聚焦推荐系统与 NLP…</span> <span class="badge badge--stale"><span class="dot"></span>已过期</span></td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+                <span class="more">
+                  <button class="btn btn-ghost btn-xs">更多 ▾</button>
+                  <div class="more__menu">
+                    <button>下载</button>
+                    <button>强制 OCR</button>
+                    <button class="danger">删除</button>
+                  </div>
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td class="col-name">陈静</td>
+              <td class="muted-cell">—</td>
+              <td>武汉大学 · 本科</td>
+              <td>26</td>
+              <td class="muted-cell">—</td>
+              <td>4</td>
+              <td>腾讯</td>
+              <td>前端工程师</td>
+              <td><span class="profile-text">前端工程师，深耕 React 生态与性能优化…</span> <span class="badge badge--ai"><span class="dot"></span>AI 生成</span></td>
+              <td class="col-actions">
+                <button class="btn btn-ghost btn-xs">匹配</button>
+                <button class="btn btn-ghost btn-xs">查看详情</button>
+                <button class="btn btn-ghost btn-xs">建流程</button>
+                <span class="more">
+                  <button class="btn btn-ghost btn-xs">更多 ▾</button>
+                  <div class="more__menu">
+                    <button>下载</button>
+                    <button>强制 OCR</button>
+                    <button class="danger">删除</button>
+                  </div>
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <button class="page">‹</button>
+        <button class="page is-current">1</button>
+        <button class="page">2</button>
+        <button class="page">3</button>
+        <span class="spacer">…</span>
+        <button class="page">238</button>
+        <button class="page">›</button>
+        <span class="hint">每页 20 条</span>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

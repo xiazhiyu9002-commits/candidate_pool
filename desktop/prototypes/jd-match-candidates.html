@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>岗位匹配人选 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card__title { font-weight: 700; font-size: 14px; }
+  .card__count { color: var(--text-muted); font-size: 12px; }
+  .card__tools { display: flex; gap: 8px; align-items: center; }
+
+  .mode-switch { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); overflow: hidden; }
+  .mode-switch button { height: 30px; padding: 0 12px; border: 0; background: var(--surface); color: var(--text-muted); font-size: 12px; cursor: pointer; }
+  .mode-switch button.is-active { background: var(--primary); color: #fff; }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: max-content; }
+  thead th { background: #f8fafc; color: var(--text-muted); font-weight: 600; font-size: 12px; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 13px; vertical-align: middle; }
+  tbody tr:hover { background: #fafbfc; }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  th.col-name, td.col-name { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 96px; font-weight: 600; }
+  thead th.col-name { background: #f8fafc; z-index: 2; }
+  th.col-actions, td.col-actions { position: sticky; right: 0; background: var(--surface); z-index: 1; box-shadow: -8px 0 12px -10px rgba(15,23,42,0.18); }
+  thead th.col-actions { background: #f8fafc; z-index: 2; }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge--success { color: var(--success); background: var(--success-soft); }
+  .badge--ai { color: var(--primary); background: var(--primary-soft); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  .profile-text { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; color: var(--text-muted); }
+
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+
+  .match-context { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: #fbfcfe; font-size: 12px; color: var(--text-muted); }
+  .match-context strong { color: var(--primary-hover); }
+
+  .column-menu { position: relative; }
+  .column-menu__panel { display: none; position: absolute; top: 100%; right: 0; z-index: 30; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-md); min-width: 180px; padding: 6px; }
+  .column-menu.is-open .column-menu__panel { display: block; }
+  .column-menu__panel label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; }
+  .column-menu__panel label:hover { background: var(--primary-soft); }
+  .column-menu__panel label.is-fixed { color: var(--text-faint); cursor: not-allowed; }
+  .column-menu__panel .column-menu__note { padding: 6px 8px; color: var(--text-faint); font-size: 11px; border-top: 1px solid var(--border); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item is-active" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>JD 管理</h1>
+        <div class="sub">共 42 个在招岗位</div>
+      </div>
+      <div class="page-head__actions">
+        <button class="btn btn-primary">导入 JD</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">岗位列表 <span class="card__count">42 个</span></div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>岗位</th><th>公司</th><th>状态</th><th>候选人画像要求</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>高级后端工程师</strong></td>
+              <td>字节跳动</td>
+              <td><span class="badge badge--success"><span class="dot"></span>招聘中</span></td>
+              <td><span class="profile-text">5 年以上后端经验，Java/Go，熟悉高并发与分布式，具备风控或支付背景者优先…</span> <span class="badge badge--ai"><span class="dot"></span>AI 生成</span></td>
+              <td><button class="btn btn-secondary btn-xs">匹配候选人</button> <button class="btn btn-ghost btn-xs">编辑</button></td>
+            </tr>
+            <tr>
+              <td>资深产品经理</td>
+              <td>美团</td>
+              <td><span class="badge badge--success"><span class="dot"></span>招聘中</span></td>
+              <td><span class="profile-text">B 端交易产品，数据驱动，有增长经验，能独立负责完整产品线…</span> <span class="badge badge--ai"><span class="dot"></span>AI 生成</span></td>
+              <td><button class="btn btn-secondary btn-xs">匹配候选人</button> <button class="btn btn-ghost btn-xs">编辑</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card__head">
+        <div class="card__title">匹配候选人 <span class="card__count">为「高级后端工程师」匹配到 3 人</span></div>
+        <div class="card__tools">
+          <div class="mode-switch">
+            <button>关键词</button>
+            <button>向量</button>
+            <button class="is-active">混合</button>
+          </div>
+          <div class="column-menu" id="columnMenu">
+            <button class="btn btn-ghost btn-xs" id="columnMenuBtn">列设置</button>
+            <div class="column-menu__panel" id="columnMenuPanel"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="match-context">
+        <span>匹配岗位：<strong>高级后端工程师</strong> · 字节跳动 · 北京</span>
+        <span>结果列随人才库「列设置」联动</span>
+      </div>
+
+      <div class="table-scroll">
+        <table id="matchTable">
+          <thead id="matchHead"></thead>
+          <tbody id="matchBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // 可选数据列：与人才库「列设置」一致（姓名固定，查看详情 / 建流程固定）
+  const COLUMNS = [
+    { key: "phone", label: "电话" },
+    { key: "school", label: "学校学历" },
+    { key: "school_level", label: "学校等级" },
+    { key: "age", label: "年龄" },
+    { key: "gender", label: "性别" },
+    { key: "city", label: "所在城市" },
+    { key: "years", label: "工作年限" },
+    { key: "company", label: "公司" },
+    { key: "title", label: "职位" },
+    { key: "job_level", label: "职级" },
+    { key: "salary", label: "薪资" },
+    { key: "profile", label: "AI 画像" },
+  ];
+
+  const ROWS = [
+    { name: "张伟", phone: "138****3820", school: "北京大学 · 硕士", school_level: "985", age: "29", gender: "男", city: "北京", years: "6", company: "字节跳动", title: "后端工程师", job_level: "P7", salary: "60-80 万", profile: "资深后端工程师，主导高并发风控平台建设，擅长 Java/Go 与分布式架构…" },
+    { name: "李娜", phone: "139****2211", school: "复旦大学 · 本科", school_level: "985", age: "27", gender: "女", city: "上海", years: "5", company: "美团", title: "产品经理", job_level: "P6", salary: "45-60 万", profile: "B 端交易产品负责人，擅长用户增长与数据驱动决策…" },
+    { name: "王强", phone: "137****9034", school: "浙江大学 · 硕士", school_level: "985", age: "31", gender: "男", city: "杭州", years: "8", company: "阿里巴巴", title: "算法工程师", job_level: "P8", salary: "80-120 万", profile: "机器学习算法专家，聚焦推荐系统与 NLP…" },
+  ];
+
+  // 示例：用户当前仅在人才库展示「姓名」与「电话」
+  const visible = { phone: true };
+
+  function renderColumnsMenu() {
+    const panel = document.getElementById("columnMenuPanel");
+    panel.innerHTML =
+      '<label class="is-fixed"><input type="checkbox" checked disabled> 姓名（固定）</label>' +
+      COLUMNS.map((col) => (
+        `<label><input type="checkbox" data-key="${col.key}" ${visible[col.key] ? "checked" : ""}> ${col.label}</label>`
+      )).join("") +
+      '<div class="column-menu__note">查看详情、建流程为固定操作列，始终展示</div>';
+    panel.querySelectorAll('input[data-key]').forEach((input) => {
+      input.addEventListener("change", () => {
+        if (input.checked) visible[input.dataset.key] = true;
+        else delete visible[input.dataset.key];
+        render();
+      });
+    });
+  }
+
+  function render() {
+    const activeCols = COLUMNS.filter((col) => visible[col.key]);
+
+    const head = document.getElementById("matchHead");
+    head.innerHTML =
+      '<tr><th class="col-name">姓名</th>' +
+      activeCols.map((col) => `<th>${col.label}</th>`).join("") +
+      '<th class="col-actions">操作</th></tr>';
+
+    const body = document.getElementById("matchBody");
+    body.innerHTML = ROWS.map((row) => (
+      '<tr>' +
+      `<td class="col-name"><strong>${row.name}</strong></td>` +
+      activeCols.map((col) => `<td>${row[col.key] || "—"}</td>`).join("") +
+      '<td class="col-actions">' +
+        '<button class="btn btn-ghost btn-xs">查看详情</button>' +
+        '<button class="btn btn-ghost btn-xs">建流程</button>' +
+      '</td>' +
+      '</tr>'
+    )).join("");
+  }
+
+  document.getElementById("columnMenuBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.getElementById("columnMenu").classList.toggle("is-open");
+  });
+  document.addEventListener("click", () => {
+    document.getElementById("columnMenu").classList.remove("is-open");
+  });
+
+  renderColumnsMenu();
+  render();
+</script>
+</body>
+</html>

@@ -1,0 +1,217 @@
+[
+  {
+    "case_id": "c8cc7ea1",
+    "query_type": "jd_to_candidates",
+    "hits": [
+      {
+        "alias": "a6078d20a688",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "e887b787b91a",
+        "model_verdict": "reject",
+        "model_grade": 0,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "62e3cce46ff3",
+        "model_verdict": "reject",
+        "model_grade": 0,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "d13894a1",
+    "query_type": "jd_to_candidates",
+    "hits": []
+  },
+  {
+    "case_id": "64994b1c",
+    "query_type": "jd_to_candidates",
+    "hits": []
+  },
+  {
+    "case_id": "69111649",
+    "query_type": "jd_to_candidates",
+    "hits": [
+      {
+        "alias": "7d5bf75cce11",
+        "model_verdict": "pending",
+        "model_grade": 2,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "f3fe36fee319",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "56f942a1",
+    "query_type": "jd_to_candidates",
+    "hits": []
+  },
+  {
+    "case_id": "d8504776",
+    "query_type": "jd_to_candidates",
+    "hits": []
+  },
+  {
+    "case_id": "a0675f51",
+    "query_type": "jd_to_candidates",
+    "hits": [
+      {
+        "alias": "ec564ebca5cd",
+        "model_verdict": "pending",
+        "model_grade": 2,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "e9d118d55ff7",
+        "model_verdict": "pending",
+        "model_grade": 2,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "2ecec438",
+    "query_type": "jd_to_candidates",
+    "hits": [
+      {
+        "alias": "73d0e056bf9d",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "3f5da92e8746",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "60e6099165b8",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "82bf2318666e",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "cff572603154",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "599236b385ef",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "543afa81",
+    "query_type": "jd_to_candidates",
+    "hits": []
+  },
+  {
+    "case_id": "399e2a20",
+    "query_type": "jd_to_candidates",
+    "hits": [
+      {
+        "alias": "dacc77187375",
+        "model_verdict": "pending",
+        "model_grade": 2,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "7d5bf75cce11",
+    "query_type": "candidate_to_jds",
+    "hits": [
+      {
+        "alias": "69111649",
+        "model_verdict": "pending",
+        "model_grade": 2,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "9eeb2bf3737c",
+    "query_type": "candidate_to_jds",
+    "hits": []
+  },
+  {
+    "case_id": "f96cb81456e3",
+    "query_type": "candidate_to_jds",
+    "hits": []
+  },
+  {
+    "case_id": "3f5da92e8746",
+    "query_type": "candidate_to_jds",
+    "hits": [
+      {
+        "alias": "2ecec438",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "9a442384",
+        "model_verdict": "recommend",
+        "model_grade": 3,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "469b753a",
+        "model_verdict": "pending",
+        "model_grade": 1,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      },
+      {
+        "alias": "2f4a9fde",
+        "model_verdict": "pending",
+        "model_grade": 1,
+        "headhunter_verdict": null,
+        "adjudicated_verdict": null
+      }
+    ]
+  },
+  {
+    "case_id": "42c0b000fc46",
+    "query_type": "candidate_to_jds",
+    "hits": []
+  }
+]

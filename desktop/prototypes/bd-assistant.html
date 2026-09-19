@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BD 助手 · 视觉原型</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --surface: #ffffff; --text: #1f2933; --text-muted: #6b7280; --text-faint: #9aa1ab;
+    --border: #e5e7eb; --border-strong: #d3d8de;
+    --primary: #2563eb; --primary-hover: #1d4ed8; --primary-soft: #eef3fe;
+    --success: #16a34a; --success-soft: #ecfdf3; --warning: #b45309; --warning-soft: #fef3e7; --danger: #dc2626; --danger-soft: #fef2f2;
+    --nav-bg: #1e293b; --nav-text: #94a3b8; --nav-active-bg: #263449; --nav-active-text: #e2e8f0; --nav-accent: #2563eb;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 10px; --shadow-sm: 0 1px 2px rgba(15,23,42,0.05); --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .shell { display: flex; min-height: 100vh; }
+  .nav { width: 180px; background: var(--nav-bg); flex: 0 0 auto; display: flex; flex-direction: column; }
+  .nav__brand { padding: 18px 16px 22px; color: #e2e8f0; font-weight: 700; font-size: 15px; letter-spacing: 0.3px; border-bottom: 1px solid rgba(148,163,184,0.12); }
+  .nav__brand small { display: block; font-weight: 400; color: var(--nav-text); font-size: 11px; margin-top: 2px; }
+  .nav__list { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .nav__item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-md); color: var(--nav-text); text-decoration: none; font-size: 13px; position: relative; }
+  .nav__item:hover { color: var(--nav-active-text); }
+  .nav__item.is-active { background: var(--nav-active-bg); color: var(--nav-active-text); }
+  .nav__item.is-active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--nav-accent); }
+  .nav__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.55; }
+  .nav__foot { margin-top: auto; padding: 12px 16px; color: var(--nav-text); font-size: 11px; border-top: 1px solid rgba(148,163,184,0.12); }
+  .main { flex: 1; min-width: 0; padding: 24px 28px; }
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 700; }
+  .page-head .sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .page-head__actions { display: flex; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+  .btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-ghost { background: transparent; color: var(--text-muted); }
+  .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+  .btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card__title { font-weight: 700; font-size: 14px; }
+  .card__count { color: var(--text-muted); font-size: 12px; }
+  .hint { color: var(--text-faint); font-size: 12px; }
+  a { color: inherit; text-decoration: none; }
+
+  .search-bar { display: flex; gap: 10px; margin-bottom: 12px; }
+  .search-bar input { flex: 1; height: 40px; border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: 0 14px; font-size: 14px; outline: none; background: var(--surface); }
+  .search-bar input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+  .followup { display: flex; gap: 10px; margin-bottom: 16px; }
+  .followup input { flex: 1; height: 34px; border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: 0 12px; font-size: 13px; outline: none; background: var(--surface); }
+
+  .leads { display: grid; gap: 12px; }
+  .lead { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+  .lead-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .lead-head .company { font-size: 15px; font-weight: 700; color: var(--primary); cursor: pointer; }
+  .lead-head .company:hover { text-decoration: underline; }
+  .lead-head .role { color: var(--text-muted); font-size: 13px; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .tag-ok { background: var(--success-soft); color: var(--success); }
+  .tag-bad { background: var(--danger-soft); color: var(--danger); }
+  .tag-muted { background: #eef1f5; color: var(--text-muted); }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+  .requirements { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+  .summary { margin: 8px 0 0; color: var(--text); font-size: 13px; line-height: 1.6; }
+  .evidence { margin: 10px 0 0; padding: 10px 0 0; list-style: none; border-top: 1px dashed var(--border); }
+  .evidence li { padding: 6px 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+  .evidence li strong { color: var(--text); }
+  .pool { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+  .pool-results { list-style: none; margin: 8px 0 0; padding: 0; }
+  .pool-results li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="nav__brand">招聘工作台<small>Recruiting Console</small></div>
+    <nav class="nav__list">
+      <a class="nav__item" href="talent-pool.html"><span class="nav__dot"></span>人才库</a>
+      <a class="nav__item" href="jd-management.html"><span class="nav__dot"></span>JD 管理</a>
+      <a class="nav__item" href="recruitment.html"><span class="nav__dot"></span>流程中</a>
+      <a class="nav__item" href="dashboard.html"><span class="nav__dot"></span>数据看板</a>
+      <a class="nav__item" href="mapping.html"><span class="nav__dot"></span>Mapping</a>
+      <a class="nav__item is-active" href="bd-assistant.html"><span class="nav__dot"></span>BD 助手</a>
+      <a class="nav__item" href="settings.html"><span class="nav__dot"></span>设置</a>
+    </nav>
+    <div class="nav__foot">本地数据 · 已同步</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>BD 助手</h1>
+        <div class="sub">深度检索目标公司与招聘线索</div>
+      </div>
+    </div>
+
+    <div class="search-bar">
+      <input placeholder="输入自然语言需求，如「找上海做大模型算法的公司，最好在招人」">
+      <button class="btn btn-primary">深度检索</button>
+    </div>
+
+    <div class="followup">
+      <input placeholder="追问：补充或修正检索方向…">
+      <button class="btn btn-secondary">追问</button>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div class="card__title">线索 <span class="card__count">3 条</span></div>
+      </div>
+      <div style="padding: 16px;">
+        <div class="leads">
+          <div class="lead">
+            <div class="lead-head">
+              <span class="company">上海智子科技</span>
+              <span class="role">大模型算法工程师</span>
+              <span class="tag tag-ok">在招</span>
+              <span class="tag tag-muted">置信度 92%</span>
+            </div>
+            <div class="meta">
+              <span>开放时间：2026-09-02</span>
+              <span>薪资：60-90K·14薪</span>
+              <span>职级：P7</span>
+            </div>
+            <ul class="requirements">
+              <li>熟悉大模型训练/微调，掌握 PyTorch</li>
+              <li>有 RLHF 或推理优化经验者优先</li>
+            </ul>
+            <p class="summary">聚焦多模态大模型研发的创业公司，正在扩充算法团队，招聘大模型算法与推理加速方向人才。</p>
+            <ul class="evidence">
+              <li><strong>在招岗位</strong>：官网招聘页显示「大模型算法工程师」在招 <a href="#">（来源）</a></li>
+              <li><strong>薪资范围</strong>：招聘帖标注 60-90K <a href="#">（来源）</a></li>
+            </ul>
+            <div class="pool">
+              <div style="display:flex; gap:8px; align-items:center;">
+                <button class="btn btn-ghost btn-xs">查人才库</button>
+                <button class="btn btn-ghost btn-xs">收起</button>
+              </div>
+              <ul class="pool-results">
+                <li><span>张伟 · 138****3820</span><button class="btn btn-ghost btn-xs">预览简历</button></li>
+                <li><span>王强 · 137****9034</span><button class="btn btn-ghost btn-xs">预览简历</button></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="lead">
+            <div class="lead-head">
+              <span class="company">杭州云启智能</span>
+              <span class="role">后端工程师</span>
+              <span class="tag tag-bad">未在招</span>
+              <span class="tag tag-muted">置信度 78%</span>
+            </div>
+            <p class="summary">企业服务方向公司，当前岗位已下线，仅作人才库参考。</p>
+          </div>
+
+          <div class="lead">
+            <div class="lead-head">
+              <span class="company">北京星图数据</span>
+              <span class="role">岗位未知</span>
+              <span class="tag tag-ok">在招</span>
+              <span class="tag tag-muted">置信度 85%</span>
+            </div>
+            <div class="meta"><span>职级：P6-P7</span></div>
+            <ul class="evidence">
+              <li><strong>团队规模</strong>：核心团队约 40 人 <a href="#">（来源）</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

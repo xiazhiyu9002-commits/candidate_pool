@@ -1,0 +1,105 @@
+{
+  "gender_cases": [
+    {
+      "gender": "男",
+      "expected": 43,
+      "returned": 43,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "gender": "女",
+      "expected": 8,
+      "returned": 8,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    }
+  ],
+  "gender_all_correct": true,
+  "phone_cases": [
+    {
+      "fingerprint": "13076985703",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13102338929",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13167519229",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13206711183",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13250807985",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13258307220",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13289896536",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13311253579",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13388177017",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    },
+    {
+      "fingerprint": "13510552329",
+      "expected": 1,
+      "returned": 1,
+      "missing": [],
+      "extra": [],
+      "correct": true
+    }
+  ],
+  "phone_all_correct": true,
+  "all_correct": true
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kerui.local/schemas/corpus-acceptance.schema.json",
+  "title": "Privacy-safe corpus acceptance report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "total_files",
+    "total_bytes",
+    "supported_files",
+    "unsupported_files",
+    "duplicate_files",
+    "extractable_files",
+    "ocr_required_files",
+    "extraction_failed_files",
+    "aggregate_sha256",
+    "formats"
+  ],
+  "properties": {
+    "total_files": { "type": "integer", "minimum": 0 },
+    "total_bytes": { "type": "integer", "minimum": 0 },
+    "supported_files": { "type": "integer", "minimum": 0 },
+    "unsupported_files": { "type": "integer", "minimum": 0 },
+    "duplicate_files": { "type": "integer", "minimum": 0 },
+    "extractable_files": { "type": "integer", "minimum": 0 },
+    "ocr_required_files": { "type": "integer", "minimum": 0 },
+    "extraction_failed_files": { "type": "integer", "minimum": 0 },
+    "aggregate_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "formats": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["files", "bytes", "extractable", "ocr_required", "extraction_failed"],
+        "properties": {
+          "files": { "type": "integer", "minimum": 0 },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "extractable": { "type": "integer", "minimum": 0 },
+          "ocr_required": { "type": "integer", "minimum": 0 },
+          "extraction_failed": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

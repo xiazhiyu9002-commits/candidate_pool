@@ -1,0 +1,11 @@
+{
+  "candidate_count": 100000,
+  "query_count": 200,
+  "concurrency": 10,
+  "p50_ms": 706.92,
+  "p95_ms": 795.56,
+  "p99_ms": 825.26,
+  "error_rate": 0.0,
+  "recall_at_300": 1.0,
+  "ndcg_at_10": 0.8687275197300393
+}

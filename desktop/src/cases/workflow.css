@@ -1,0 +1,13 @@
+.workflow-drawer label, .workflow-filters label { display: grid; gap: 6px; margin: 10px 0; color: #536158; font-size: 13px; }
+.workflow-drawer input, .workflow-drawer textarea, .workflow-filters input { width: 100%; border: 1px solid #dfe7e1; border-radius: 8px; padding: 9px; font: inherit; background: #fbfcfb; }
+.workflow-drawer textarea { resize: vertical; }
+.workflow-drawer .case-actions, .workflow-filters { flex-wrap: wrap; }
+.workflow-drawer fieldset { margin-bottom: 16px; }
+.workflow-drawer details { margin: 12px 0; }
+.workflow-drawer pre { overflow-wrap: anywhere; }
+.workflow-drawer button:disabled, .workflow-filters button:disabled { opacity: .5; cursor: not-allowed; }
+.workflow-filters { align-items: end; gap: 12px; }
+.workflow-reminders { margin-top: 24px; }
+.workflow-reminders label { display: grid; gap: 6px; font-size: 13px; }
+.workflow-reminders .jd-row { flex-wrap: wrap; }
+.workflow-reminders small { display: block; margin-top: 5px; }

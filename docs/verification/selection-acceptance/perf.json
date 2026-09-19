@@ -1,0 +1,18 @@
+{
+  "keyword": {
+    "requests": 50,
+    "p50_ms": 67.1,
+    "p95_ms": 127.23,
+    "max_ms": 144.62
+  },
+  "exact_filter": {
+    "requests": 50,
+    "p50_ms": 70.92,
+    "p95_ms": 143.48,
+    "max_ms": 174.85
+  },
+  "threshold_ms": 500,
+  "keyword_p95_pass": true,
+  "filter_p95_pass": true,
+  "note": "完整 API 耗时（含 SQLite hydrate）；本地 provider，关键词/精确筛选 AI 调用为 0"
+}

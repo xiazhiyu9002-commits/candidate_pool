@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kerui-recruit"
+version = "0.1.0"
+description = "Local-first recruitment talent database and matching desktop backend"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.16,<2",
+  "cryptography>=43,<45",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "jieba>=0.42.1,<1",
+  "lancedb>=0.25,<1",
+  "openpyxl>=3.1,<4",
+  "pydantic>=2.11,<3",
+  "pymupdf>=1.26,<2",
+  "python-docx>=1.2,<2",
+  "python-multipart>=0.0.20,<1",
+  "pywin32>=308,<400; platform_system == 'Windows'",
+  "sqlalchemy>=2.0.43,<3",
+  "uuid6>=2025.0.1,<2027",
+  "uvicorn>=0.35,<1",
+]
+
+[project.scripts]
+kerui-recruit-sidecar = "kerui_recruit.sidecar:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pyinstaller>=6.22,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kerui_recruit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-ra -m 'not performance'"
+markers = [
+  "performance: slow, scaled acceptance benchmarks for the Phase 0 gate",
+]

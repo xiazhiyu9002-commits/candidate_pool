@@ -1,0 +1,289 @@
+{
+  "taxonomy_version": "3",
+  "description": "职业方向细分边界盲卡（匿名/脱敏）。用于验证 specializations（FULL_STACK / AI_APPLICATION / DATA_PLATFORM / DATA_WAREHOUSE）等细分标签与主方向判定一致；不包含姓名、联系方式或真实简历正文。",
+  "cards": [
+    {
+      "id": "fs-001",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Java", "Spring", "React", "TypeScript"],
+        "summary": "全栈工程师，负责交易系统前后端交付",
+        "experiences": [
+          {"title": "全栈工程师", "summary": "独立完成交易系统后端 API 与前端管理台开发"},
+          {"title": "后端工程师", "summary": "负责 Java 微服务与 React 前端页面交付"}
+        ],
+        "projects": [
+          {"summary": "交易系统后端服务与前端控制台全栈交付"},
+          {"summary": "React 组件库与 Java API 联调"}
+        ]
+      }
+    },
+    {
+      "id": "fs-002",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Go", "Vue", "PostgreSQL"],
+        "summary": "后端为主并负责前端页面开发",
+        "experiences": [
+          {"title": "全栈开发", "summary": "负责 Go 服务端与 Vue 管理端开发"}
+        ],
+        "projects": [
+          {"summary": "Go 后端 + Vue 前端管理系统"}
+        ]
+      }
+    },
+    {
+      "id": "fs-003",
+      "expected": {"direction": "FRONTEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["React", "Node.js", "TypeScript"],
+        "summary": "前端为主，负责 Node 中间层",
+        "experiences": [
+          {"title": "前端工程师", "summary": "负责 React 前端与 Node BFF 中间层开发"}
+        ],
+        "projects": [
+          {"summary": "React 前端 + Node BFF 全栈项目"}
+        ]
+      }
+    },
+    {
+      "id": "fs-004",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Python", "Django", "React"],
+        "summary": "后端与前端兼顾的全栈交付",
+        "experiences": [
+          {"title": "全栈工程师", "summary": "负责 Django 后端与 React 前端交付"}
+        ],
+        "projects": [
+          {"summary": "Django + React 业务系统"}
+        ]
+      }
+    },
+    {
+      "id": "fs-005",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Java", "Vue", "MySQL"],
+        "summary": "企业级系统前后端全栈",
+        "experiences": [
+          {"title": "全栈开发", "summary": "负责 Java 后端与 Vue 前端企业系统"}
+        ],
+        "projects": [
+          {"summary": "Java + Vue 企业管理系统"}
+        ]
+      }
+    },
+    {
+      "id": "fs-006",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Node.js", "React", "MongoDB"],
+        "summary": "全栈产品研发",
+        "experiences": [
+          {"title": "全栈工程师", "summary": "负责 Node 服务与 React 产品前端"}
+        ],
+        "projects": [
+          {"summary": "Node + React 全栈产品"}
+        ]
+      }
+    },
+    {
+      "id": "fs-007",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["C#", ".NET", "Angular"],
+        "summary": "企业后端与前端全栈",
+        "experiences": [
+          {"title": "全栈开发", "summary": "负责 .NET 后端与 Angular 前端"}
+        ],
+        "projects": [
+          {"summary": ".NET + Angular 业务系统"}
+        ]
+      }
+    },
+    {
+      "id": "fs-008",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Java", "React", "Kafka"],
+        "summary": "后端架构兼顾前端",
+        "experiences": [
+          {"title": "全栈工程师", "summary": "负责 Java 后端架构与 React 前端"}
+        ],
+        "projects": [
+          {"summary": "Java 后端 + React 前端"}
+        ]
+      }
+    },
+    {
+      "id": "fs-009",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Ruby", "Rails", "React"],
+        "summary": "全栈 Web 交付",
+        "experiences": [
+          {"title": "全栈工程师", "summary": "负责 Rails 后端与 React 前端"}
+        ],
+        "projects": [
+          {"summary": "Rails + React Web 应用"}
+        ]
+      }
+    },
+    {
+      "id": "fs-010",
+      "expected": {"direction": "BACKEND", "specializations": ["FULL_STACK"]},
+      "card": {
+        "skills": ["Java", "Spring", "Vue"],
+        "summary": "前后端全栈交付",
+        "experiences": [
+          {"title": "全栈开发", "summary": "负责 Spring 后端与 Vue 前端"}
+        ],
+        "projects": [
+          {"summary": "Spring + Vue 系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-001",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "LangGraph", "RAG"],
+        "summary": "Agent 应用开发与业务系统集成",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责 Agent 编排与 RAG 系统接入业务系统"}
+        ],
+        "projects": [
+          {"summary": "基于 LangGraph 的 Agent 应用"},
+          {"summary": "RAG 知识库接入客服系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-002",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "FastAPI", "LLM API"],
+        "summary": "大模型应用服务开发",
+        "experiences": [
+          {"title": "AI 应用开发", "summary": "负责大模型 API 接入与业务系统集成"}
+        ],
+        "projects": [
+          {"summary": "LLM 应用服务与业务系统对接"}
+        ]
+      }
+    },
+    {
+      "id": "ai-003",
+      "expected": {"direction": "ALGORITHM", "specializations": []},
+      "card": {
+        "skills": ["PyTorch", "SFT", "RLVR"],
+        "summary": "大模型训练与微调",
+        "experiences": [
+          {"title": "算法工程师", "summary": "负责大模型微调与离线评测"}
+        ],
+        "projects": [
+          {"summary": "大模型 SFT 与强化学习训练"}
+        ]
+      }
+    },
+    {
+      "id": "ai-004",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "Tool Calling", "Memory"],
+        "summary": "Agent 工具调用与记忆模块",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责 Agent 工具调用与记忆模块落地"}
+        ],
+        "projects": [
+          {"summary": "Agent 工具调用与 Memory 模块"}
+        ]
+      }
+    },
+    {
+      "id": "ai-005",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "CrewAI", "LangChain"],
+        "summary": "多智能体工作流编排",
+        "experiences": [
+          {"title": "AI 应用开发", "summary": "负责多智能体工作流编排与业务集成"}
+        ],
+        "projects": [
+          {"summary": "CrewAI 多智能体编排系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-006",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "ReAct", "Planning"],
+        "summary": "Agent 规划与推理应用",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责 Agent 规划与推理落地到业务系统"}
+        ],
+        "projects": [
+          {"summary": "Agent 规划与推理应用"}
+        ]
+      }
+    },
+    {
+      "id": "ai-007",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Java", "Spring AI", "RAG"],
+        "summary": "Java 侧大模型应用集成",
+        "experiences": [
+          {"title": "AI 应用开发", "summary": "负责 Spring AI 与 RAG 业务集成"}
+        ],
+        "projects": [
+          {"summary": "Spring AI + RAG 业务系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-008",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "NL2SQL", "ChatBI"],
+        "summary": "NL2SQL 智能问数应用",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责 NL2SQL 与 ChatBI 应用落地"}
+        ],
+        "projects": [
+          {"summary": "NL2SQL / ChatBI 智能问数系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-009",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "RAG", "VectorDB"],
+        "summary": "企业知识库 RAG 系统",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责企业知识库 RAG 系统开发与集成"}
+        ],
+        "projects": [
+          {"summary": "企业知识库 RAG 系统"}
+        ]
+      }
+    },
+    {
+      "id": "ai-010",
+      "expected": {"direction": "BACKEND", "specializations": ["AI_APPLICATION"]},
+      "card": {
+        "skills": ["Python", "Agent Graph", "Memory"],
+        "summary": "企业级 Agent 平台应用开发",
+        "experiences": [
+          {"title": "AI 应用工程师", "summary": "负责企业级 Agent 平台应用开发"}
+        ],
+        "projects": [
+          {"summary": "企业级 Agent 平台应用"}
+        ]
+      }
+    }
+  ]
+}

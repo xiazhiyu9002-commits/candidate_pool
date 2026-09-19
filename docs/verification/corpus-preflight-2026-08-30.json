@@ -1,0 +1,69 @@
+{
+  "total_files": 2068,
+  "total_bytes": 853366901,
+  "supported_files": 2056,
+  "unsupported_files": 12,
+  "duplicate_files": 90,
+  "extractable_files": 2052,
+  "ocr_required_files": 4,
+  "extraction_failed_files": 0,
+  "aggregate_sha256": "759157fe43c2c00607816b7381cb131a42dbe2afd6690e936891cd1e658afae9",
+  "formats": {
+    "doc": {
+      "files": 5,
+      "bytes": 914182,
+      "extractable": 5,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "docx": {
+      "files": 106,
+      "bytes": 5146985,
+      "extractable": 106,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "eml": {
+      "files": 2,
+      "bytes": 2261490,
+      "extractable": 0,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "jpg": {
+      "files": 2,
+      "bytes": 399782,
+      "extractable": 0,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "pdf": {
+      "files": 1945,
+      "bytes": 837220616,
+      "extractable": 1941,
+      "ocr_required": 4,
+      "extraction_failed": 0
+    },
+    "png": {
+      "files": 4,
+      "bytes": 7310915,
+      "extractable": 0,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "xls": {
+      "files": 1,
+      "bytes": 33280,
+      "extractable": 0,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    },
+    "xlsx": {
+      "files": 3,
+      "bytes": 79651,
+      "extractable": 0,
+      "ocr_required": 0,
+      "extraction_failed": 0
+    }
+  }
+}
