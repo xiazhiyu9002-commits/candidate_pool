@@ -2,17 +2,27 @@
 
 ## 目标与结论
 
-本设计优化人才库的纯向量检索、混合检索和可选 AI 语义改写。目标不是继续凭经验调整相似度阈值，而是修正当前检索数据流中已经确认的证据丢失、查询表达混用和评测口径偏差，使召回、融合与重排分别使用适合自己的文本和信号。
+本设计优化人才库的纯向量检索、混合检索和可选 AI 语义改写。目标不是继续凭经验调整相似度阈值，而是修正当前检索数据流中已经确认的证据使用不充分、查询表达混用和评测口径偏差，使召回、融合与重排分别使用适合自己的文本和信号。
 
 核心决策如下：
 
 1. **候选人侧向量文本由纯向量和混合模式共用。** 不为两种模式维护两套索引；差异放在查询构造、分类型召回配额、融合权重和降级策略中。
 2. **按用途拆分三种文本面。** FTS 使用词法文本，embedding 使用简洁且可追溯的语义文本，reranker 使用候选人级多片段证据包；不再让一个 `vector_text` 同时承担所有用途。
 3. **AI 改写从“联想扩写”改成“保真规范化”。** 原查询永远保留，改写查询只作为补充向量召回，不覆盖原查询；reranker 默认使用原查询，而不是同义词堆叠后的长字符串。
-4. **先修确定性链路，再重建向量。** 先解决混合模式正文开关失效、最佳向量片段丢失、展示 `limit` 影响排序等读侧问题；之后才进行隔离索引消融和生产切换。
+4. **先修确定性链路，再重建向量。** 先解决混合模式正文开关失效、最佳向量片段虽已保留但未进入搜索重排、展示 `limit` 影响排序等读侧问题；之后才进行隔离索引消融和生产切换。
 5. **AI 改写继续默认关闭。** 只有在完整生产 API 链路、扩大后的盲测集上达到本文发布门槛，才讨论默认开启。
 
 本设计不改变结构化硬条件的含义，不把城市、学历、年限、学校、姓名、手机号等字段重新塞入向量，也不新增建索引阶段的生成模型调用。
+
+### 基线口径
+
+本文的“当前工作区”指 2026-09-20 复审时的未提交工作树，而不是仅指 Git `HEAD`：
+
+- Git `HEAD`（初始代码基线）尚未包含多片段证据包，前端向量/混合默认返回数为 100；
+- 当前工作区已经加入 `EvidenceChunk`、`select_evidence()` 和 `SearchHit.evidence`，并把前端默认返回数改为 50；
+- 2026-09-19 的漏斗实验以当时的 `limit=100` 为“现役”基线，文中采用默认 50 是该实验之后已经落入工作区的产品决策，不能把两者当作同一时间点的现状。
+
+下文的问题表以当前工作区为准；历史实验数字只用于解释决策来源。
 
 ## 当前事实与问题定位
 
@@ -26,6 +36,7 @@
   → keyword：原关键词 → FTS
   → vector：可选 AI 改写 → embedding → vector recall
   → hybrid：原关键词 FTS + 改写后的向量查询 → 候选人级 RRF
+  → 召回层附带最多 3 条 EvidenceChunk，但搜索 reranker 仍只读取单条代表 vector_text
   → 改写后的查询 + 单条代表 vector_text → reranker
   → 候选人去重与 limit 截断
 ```
@@ -36,8 +47,8 @@
 
 | 编号 | 问题 | 当前代码事实 | 影响 |
 | --- | --- | --- | --- |
-| V1 | 候选人只保留一条最佳 chunk | `_candidate_rows()` 使用 `unique.setdefault(candidate_id, row)` | 同一候选人的其他职责、项目和业务证据在召回后丢失。 |
-| H1 | 混合融合丢失最佳向量片段 | `_rrf()` 先遍历 BM25，再用 `rows.setdefault()` 保存代表行 | 同时命中两路时通常保留 BM25 父行；真正触发向量召回的经历/项目片段无法进入重排。 |
+| V1 | 候选人排序仍由单条代表行决定 | `_candidate_rows()` 仍用 `unique.setdefault(candidate_id, row)` 选择代表行；当前工作区已用 `grouped + select_evidence()` 附带最多 3 条不同 kind 的 `EvidenceChunk` | 多片段文本已保留给 match 侧使用，但其 channel、rank、vector score、证据路径未保留，搜索 reranker 也尚未消费这些片段。 |
+| H1 | 混合代表行仍偏向 BM25，已附带的向量证据没有进入搜索重排 | `_rrf()` 先遍历 BM25，再用 `rows.setdefault()` 保存代表行；当前工作区随后调用 `select_evidence()` 合并父/子片段 | 真正触发向量召回的 child 文本通常已进入 `SearchHit.evidence`，不再是完全丢失；但 `SearchHit.vector_text` 仍来自 BM25 代表行，搜索 reranker 继续看不到 child，向量通道的 rank/score 也丢失。 |
 | H2 | `search_body` 没有进入混合链路 | `search()` 调 `_parallel_retrieve()` 时未传该参数；内部 FTS 使用默认 `False` | UI 的“检索经历/项目正文”开关对混合模式无效。 |
 | H3 | 混合 FTS 缺少概念覆盖信号 | `_parallel_retrieve()` 直接调用 `search_fts()`，不走 `_filter_by_hit_terms()`；后者阈值仍为 1 | 只命中一个泛词的结果可能占用融合池。 |
 | H4 | RRF 只保留 rank | 融合后的 `SearchHit.score` 是 RRF 分，原始 BM25 分与向量相似度丢失 | 无法做可靠的权重校准、阈值兜底或结果解释。 |
@@ -45,6 +56,19 @@
 | R1 | AI 改写发生语义漂移 | 当前提示词只限制硬条件，真实输出会新增 Spring、Redis、高并发、支付清算等概念 | 结果变化很大，但不是对原始意图的保真扩展。 |
 | R2 | 同一改写串同时服务 embedding 与 reranker | `semantic_query_used` 同时传给查询向量与重排器 | 同义词列表可能扩大召回，却同时稀释重排判断标准。 |
 | R3 | 改写 A/B 没走完整生产入口 | 现有脚本直接调用 `service.search(text, CandidateFilters())` | 没有覆盖 API 层硬条件提取与 `retained_keywords` 的真实行为。 |
+
+### 当前工作区已完成与仍缺失
+
+| 已在当前工作区实现 | 本设计仍需完成 |
+| --- | --- |
+| `EvidenceChunk(kind, text, score)` | 在其上补充 channel/rank/raw score/证据路径，不另建平行类型 |
+| `_candidate_rows()` / `_rrf()` 收集 grouped rows 并调用 `select_evidence()` | 修正 BM25 优先代表行带来的信号偏置，让搜索 reranker 消费多片段证据 |
+| `SearchHit.evidence` 最多携带 3 条不同 kind 文本 | 保持 match 侧兼容，同时让搜索排序使用这些证据 |
+| match 侧 `_evidence_pack()` 已按技术/业务挑选片段 | 搜索 reranker 仍使用单条 `hit.vector_text or hit.content` |
+| `POOL_LIMIT_CAP=120`、`RECALL_MIN=100`、`RERANK_DOCS=100` | 解耦用户 `limit` 与内部 pool，并保持上述召回/重排基线 |
+| 前端向量/混合默认返回 50 | 用固定内部 pool 验证 `limit=20/50/100` 的公共前缀稳定性 |
+
+实施任务不得重新创建已经存在的 `EvidenceChunk`、`select_evidence()` 或 match 证据包；只扩展其缺失的检索信号与消费路径。
 
 ### 已有量化证据
 
@@ -60,7 +84,7 @@
 
 从已有结果重新计算，改写开关前后的 top-10 集合平均 Jaccard 只有 vector 0.2311、hybrid 0.2998，20/20 条查询排序均发生变化。结论不是“改写没执行”，而是“改写造成大幅波动，但没有可靠提升”。
 
-现有漏斗实验也不支持盲目扩池：`pool=120 → 400` 的 R@20 只增加约 0.0008；把重排窗口缩到 50 会令重排失去跨池选人能力。因此第一阶段保持 `pool=120`、每路召回下限 100、重排 100、默认返回 50，避免同时改变过多变量。
+现有漏斗实验也不支持盲目扩池：`pool=120 → 400` 的 R@20 只增加约 0.0008；把重排窗口缩到 50 会令重排失去跨池选人能力。该实验的“现役”对照使用 `limit=100`；实验之后当前工作区已把产品默认返回数改为 50。因此后续实施保持 `pool=120`、每路召回下限 100、重排 100、默认返回 50，避免同时改变过多变量，同时继续把旧实验结果标注为 `limit=100` 基线。
 
 ## 方案选择
 
@@ -76,7 +100,7 @@
 
 ### 方案 C：保持索引不变，只修改 AI 提示词和阈值（不采用）
 
-实施快，但无法解决最佳子片段丢失、正文开关失效和 RRF 原始分数丢失。已有分数分布显示相关与不相关样本高度重叠，继续单独调绝对阈值不能解决根因。
+实施快，但无法解决已保留子片段未被搜索重排使用、正文开关失效和 RRF 原始分数丢失。已有分数分布显示相关与不相关样本高度重叠，继续单独调绝对阈值不能解决根因。
 
 ## 目标架构
 
@@ -141,7 +165,9 @@
 
 ### 3. Reranker 证据文本
 
-重排文本不再直接等同于单条 `vector_text`。每个候选人组装一份只读证据包：
+当前工作区的召回层已经通过 `EvidenceChunk(kind, text, score)` 和 `select_evidence()` 为每个 `SearchHit` 附带最多三条不同 kind 的片段，match 侧也已经用它构造技术/业务证据包。尚未完成的是**搜索 reranker 消费这份证据**：它仍只读取 `hit.vector_text or hit.content`。
+
+本设计复用并扩展现有 `EvidenceChunk`，不再引入一套平行的证据类型。重排文本不再直接等同于单条 `vector_text`，而是从现有证据中为每个候选人组装一份只读证据包：
 
 ```text
 [职业定位]
@@ -154,7 +180,7 @@
 向量或 FTS 排名最高的项目
 ```
 
-最多保留三段：一个 parent、一个 experience、一个 project；缺失类型不补无关片段。相同文本按规范化内容去重，总长度上限 1200 个 Unicode 字符，超限时按“查询概念覆盖数 → 通道排名 → 原始顺序”裁剪。
+最多保留三段：一个 parent、一个 experience、一个 project；若当前实体使用 `profile_point` 或 JD 侧 `child`，则按“代表片段 + 技术最相关 + 业务最相关”映射到三个槽位，缺失类型不补无关片段。相同文本按规范化内容去重，总长度上限 1200 个 Unicode 字符，超限时按“查询概念覆盖数 → 通道排名 → 原始顺序”裁剪。
 
 ## 两种模式的共用与差异
 
@@ -244,31 +270,37 @@ AI 改写只负责保真规范化，不负责岗位知识联想。已知别名�
 
 ## 内部检索契约
 
-为避免给外部 API 暴露索引细节，新增的通道信号只在搜索模块内部流转。建议增加内部不可变数据结构 `RetrievalEvidence`：
+为避免给外部 API 暴露索引细节，新增的通道信号只在搜索模块内部流转。当前工作区已经存在 `EvidenceChunk(kind, text, score)` 以及 `SearchHit.evidence`，因此在其上向后兼容地扩展，而不是新增 `RetrievalEvidence`：
 
 ```python
 @dataclass(frozen=True, slots=True)
-class RetrievalEvidence:
-    chunk_id: str
+class EvidenceChunk:
     kind: str
-    sequence: int | None
-    evidence_path: tuple[str, ...]
     text: str
-    channel: str          # "bm25" | "vector_original" | "vector_rewrite"
-    rank: int
-    raw_score: float | None
+    score: float = 0.0    # 保留现有字段，旧调用方继续可用
+    chunk_id: str | None = None
+    sequence: int | None = None
+    evidence_path: tuple[str, ...] = ()
+    channel: str | None = None  # bm25 / vector_original / vector_rewrite
+    rank: int | None = None
+    raw_score: float | None = None
 ```
+
+`raw_score` 的含义由 `channel` 决定：BM25 保存 `_score`，向量保存经统一公式换算后的 higher-is-better similarity。现有 `score` 在 vector 行上会因为只读取 `_score` 而变成 0，因此新融合逻辑不得继续依赖这个含义不明确的字段；它只作为旧 match 证据选择逻辑的兼容字段保留。
 
 `SearchHit` 增加内部字段：
 
 ```python
-evidence: tuple[RetrievalEvidence, ...] = ()
+# 已存在，元素扩展为上面的 EvidenceChunk
+evidence: tuple[EvidenceChunk, ...] = ()
 bm25_rank: int | None = None
 bm25_score: float | None = None
 vector_rank: int | None = None
 vector_score: float | None = None
 concept_coverage: float | None = None
 ```
+
+`select_evidence()` 继续作为两种搜索方向共享的入口，但需要接收带 channel/rank 的行包装，不能再依赖“BM25 列表先遍历”来隐式决定代表证据。既有 match 侧 `_evidence_pack()` 和相关测试必须保持兼容。
 
 外部响应继续保留当前 `score`、`matched_channels` 和 `rerank_score`；只有需要解释时才把经脱敏的证据摘要映射到 API，不直接返回内部原始分数字段。
 
@@ -294,8 +326,9 @@ concept_coverage: float | None = None
 
 - 将 `search_body` 传入 `_parallel_retrieve()`。
 - 解耦展示 `limit` 与内部候选池。
-- 扩展命中契约，保留各通道 rank、raw score 和最佳证据；RRF 不再覆盖向量代表行。
-- 用候选人证据包替代单条 `vector_text` 作为 reranker 文档。
+- 在现有 `EvidenceChunk` / `SearchHit.evidence` 上扩展通道、rank、raw score 和证据路径；不新增第二套证据类型。
+- 调整 RRF 的代表行与证据选择，不再依赖 BM25 优先遍历顺序覆盖向量代表信号。
+- 将已存在的候选人证据包接入搜索 reranker，替代单条 `vector_text`；保持 match 侧现有证据包行为不变。
 
 本阶段不改索引文本、不调用 AI 改写、不调整权重，便于隔离验证确定性修复。
 
@@ -330,7 +363,7 @@ concept_coverage: float | None = None
 
 | 文件 | 责任 |
 | --- | --- |
-| `backend/src/kerui_recruit/search/contracts.py` | 新增内部证据与通道信号；扩展改写状态契约。 |
+| `backend/src/kerui_recruit/search/contracts.py` | 扩展现有 `EvidenceChunk` 和 `SearchHit` 的通道信号；保持 match 侧兼容；扩展改写状态契约。 |
 | `backend/src/kerui_recruit/search/rewrite.py` | 保真提示词、输出校验、prompt version、缓存与状态。 |
 | `backend/src/kerui_recruit/search/service.py` | 双查询向量、正文开关透传、固定内部池、证据包重排和降级。 |
 | `backend/src/kerui_recruit/search/lancedb_index.py` | 分类型向量召回、候选人证据聚合、保留各通道 rank/score、chunk v9。 |
@@ -348,15 +381,16 @@ concept_coverage: float | None = None
 必须覆盖：
 
 1. hybrid 的 `search_body=false/true` 与 keyword 模式范围一致。
-2. 同一候选人 BM25 命中父行、向量命中 child 时，证据包同时保留两条证据，reranker 能看到 child。
-3. 一个候选人拥有大量 child 时不会挤占其他候选人的名额。
-4. `limit=20/50/100` 在相同查询、相同固定候选池下，公共前 20 的顺序一致。
-5. 原查询向量成功、改写失败时仍返回原查询结果且只记录改写降级。
-6. “软件工程师 后端”不得新增微服务、Redis、高并发等概念。
-7. “JS 后端”“K8s 微服务”“数仓 TL”正确规范化。
-8. 改写含新城市、学历、年限、技能或 `OR` 列表时被拒绝。
-9. reranker 失败后，原始 BM25/向量信号仍可用于融合结果解释和兜底。
-10. v8 索引被识别为需要重建，v9 重建后兼容性通过。
+2. 同一候选人 BM25 命中父行、向量命中 child 时，现有证据包继续同时保留两条证据，并新增正确的 channel/rank/raw score，搜索 reranker 能看到 child。
+3. 现有 `EvidenceChunk(kind, text, score)` 构造方式和 match 侧 `_evidence_pack()` 测试保持通过，新增字段均有兼容默认值。
+4. 一个候选人拥有大量 child 时不会挤占其他候选人的名额。
+5. `limit=20/50/100` 在相同查询、相同固定候选池下，公共前 20 的顺序一致。
+6. 原查询向量成功、改写失败时仍返回原查询结果且只记录改写降级。
+7. “软件工程师 后端”不得新增微服务、Redis、高并发等概念。
+8. “JS 后端”“K8s 微服务”“数仓 TL”正确规范化。
+9. 改写含新城市、学历、年限、技能或 `OR` 列表时被拒绝。
+10. reranker 失败后，原始 BM25/向量信号仍可用于融合结果解释和兜底。
+11. v8 索引被识别为需要重建，v9 重建后兼容性通过。
 
 ### 查询集
 
