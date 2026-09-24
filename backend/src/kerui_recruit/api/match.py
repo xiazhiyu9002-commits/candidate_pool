@@ -50,6 +50,11 @@ class MatchItem(BaseModel):
     # 不再冗余一份顶层字段：candidate 的 career_directions / business_directions 已在其中。
     direction_reason: str = ""
     evidence: list[str] = Field(default_factory=list)
+    # 业务方向是否一致：True 命中 / False 不命中 / None 任一侧缺业务方向。
+    # 一致者按 80/20 置顶，不再淘汰；前端据此标记「业务方向一致」。
+    business_match: bool | None = None
+    # 证据包（S4）：parent=代表片段，tech / business=技术、业务最相关片段。
+    evidence_pack: dict[str, str] = Field(default_factory=dict)
 
 
 class MatchResponse(BaseModel):
@@ -58,6 +63,10 @@ class MatchResponse(BaseModel):
     status: str = "success"
     empty_reason: str | None = None
     degraded_reasons: list[str] = Field(default_factory=list)
+    # 实际下推到检索层的 JD 硬条件（含原文依据），供匹配结果页明示「为什么这些人被排除」。
+    hard_filters: list[dict] = Field(default_factory=list)
+    # 因候选池被清空而自动回退的硬条件；非空表示安全阀触发，结果不再受这些条件约束。
+    relaxed: list[str] = Field(default_factory=list)
 
 
 class ReverseMatchItem(BaseModel):
@@ -144,6 +153,8 @@ async def match_jd(command: MatchJdRequest, request: Request) -> MatchResponse:
             match_tier=match_score.match_tier,
             direction_reason=match_score.direction_reason,
             evidence=list(match_score.breakdown.get("duty_evidence") or []),
+            business_match=match_score.business_match,
+            evidence_pack=dict(match_score.breakdown.get("evidence_pack") or {}),
         )
 
     return MatchResponse(
@@ -152,6 +163,8 @@ async def match_jd(command: MatchJdRequest, request: Request) -> MatchResponse:
         empty_reason=page.empty_reason,
         degraded_reasons=list(page.degraded_reasons),
         items=[_item(hit) for hit in page.items],
+        hard_filters=list(page.hard_filters),
+        relaxed=list(page.relaxed),
     )
 
 
@@ -422,6 +435,10 @@ class CandidateMatchItem(BaseModel):
     ai_category: str | None = None
     parsed_data: dict | None = None
     source_text: str | None = None
+    # 业务方向是否一致（True/False/None），一致者按 80/20 置顶展示。
+    business_match: bool | None = None
+    # 证据包（S4）：parent=代表片段，tech / business=技术、业务最相关片段。
+    evidence_pack: dict[str, str] = Field(default_factory=dict)
 
 
 class CandidateMatchResponse(BaseModel):
@@ -509,7 +526,7 @@ def _candidate_match_items(services, records, result_ids: dict[str, str]) -> lis
         }
     items: list[CandidateMatchItem] = []
     for record in records:
-        total = (record.score or services.match_service.score(record.revision_id, record.hit)).total
+        score = record.score or services.match_service.score(record.revision_id, record.hit)
         jd = jds.get(record.jd_id)
         revision = revisions.get(record.revision_id)
         items.append(
@@ -520,13 +537,15 @@ def _candidate_match_items(services, records, result_ids: dict[str, str]) -> lis
                 resume_revision_id=record.hit.revision_id,
                 company=record.company,
                 title=record.title,
-                score=total,
+                score=score.total,
                 status="未处理",
                 case_id=None,
                 jd_status=jd.status if jd else "OPEN",
                 ai_category=revision.ai_category if revision else None,
                 parsed_data=revision.parsed_data if revision else None,
                 source_text=revision.source_text if revision else None,
+                business_match=score.business_match,
+                evidence_pack=dict(score.breakdown.get("evidence_pack") or {}),
             )
         )
     return items

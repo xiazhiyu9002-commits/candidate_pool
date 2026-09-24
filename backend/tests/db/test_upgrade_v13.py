@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import inspect
 
-from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.migrate import SCHEMA_VERSION, migrate
 from kerui_recruit.db.session import create_engine_for
 
 
@@ -35,7 +35,7 @@ def test_v12_to_v13_adds_direction_and_mode_columns(tmp_path: Path) -> None:
     assert "requested_mode" in {c["name"] for c in inspector.get_columns("index_sync")}
     with engine.connect() as db:
         versions = db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all()
-    assert versions == [12, 13, 14, 15, 16, 17]
+    assert versions == list(range(12, SCHEMA_VERSION + 1))
 
 
 def test_v13_upgrade_is_idempotent(tmp_path: Path) -> None:
@@ -68,4 +68,4 @@ def test_v13_to_v14_adds_mail_cursor_uidvalidity(tmp_path: Path) -> None:
     assert "uidvalidity" in {c["name"] for c in inspector.get_columns("mail_cursor")}
     with engine.connect() as db:
         versions = db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all()
-    assert versions == [13, 14, 15, 16, 17]
+    assert versions == list(range(13, SCHEMA_VERSION + 1))

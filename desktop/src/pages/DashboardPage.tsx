@@ -1,6 +1,6 @@
 import { useRef, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DashboardByJd, DashboardFilters, DashboardOverview, DashboardTrendItem, DailyFollowupToday, JdListItem } from "../App";
+import type { DashboardByJd, DashboardFilters, DashboardOverview, DashboardTrendItem, CandidateReminderItem, DailyFollowupItem, DailyFollowupToday, JdListItem } from "../App";
 import { Button } from "../components/ui";
 
 function exportSvgAsPng(svg: SVGSVGElement, filename: string) {
@@ -166,6 +166,10 @@ export interface DashboardPageProps {
   onReload: () => void;
   onReloadTrend: (granularity: string) => void;
   onExportExcel: () => void;
+  /** 勾选只表示「今天处理过」，不代表任务完成；次日自动回到未勾选。 */
+  onToggleTodo: (item: DailyFollowupItem) => void;
+  /** 我的提醒的勾选是「任务完成」：勾上即移出列表。 */
+  onCompleteReminder: (reminder: CandidateReminderItem) => void;
 }
 
 export function DashboardPage({
@@ -182,9 +186,31 @@ export function DashboardPage({
   onReload,
   onReloadTrend,
   onExportExcel,
+  onToggleTodo,
+  onCompleteReminder,
 }: DashboardPageProps) {
   const trendSvgRef = useRef<SVGSVGElement | null>(null);
   const passRateSvgRef = useRef<SVGSVGElement | null>(null);
+
+  function todoRow(item: DailyFollowupItem, stamp: string | undefined, category: string) {
+    return (
+      <li key={item.item_key}>
+        <label className="followup-item">
+          <input
+            type="checkbox"
+            checked={item.done}
+            onChange={() => onToggleTodo(item)}
+            aria-label={`标记 ${item.name} 今日已处理`}
+            data-testid={`todo-${category}-${item.item_key}`}
+          />
+          <span className={item.done ? "is-done" : undefined}>
+            {item.name} · {item.company} · {item.title}
+          </span>
+        </label>
+        <span className="followup-time">{stamp}</span>
+      </li>
+    );
+  }
 
   return (
     <section className="jd-panel">
@@ -201,9 +227,7 @@ export function DashboardPage({
                 <p className="followup-empty">暂无待反馈</p>
               ) : (
                 <ul className="followup-list">
-                  {dailyFollowup.followup.map((item, index) => (
-                    <li key={`f-${index}`}>{item.name} · {item.company} · {item.title}<span className="followup-time">{item.date}</span></li>
-                  ))}
+                  {dailyFollowup.followup.map((item) => todoRow(item, item.date, "followup"))}
                 </ul>
               )}
             </div>
@@ -213,8 +237,30 @@ export function DashboardPage({
                 <p className="followup-empty">暂无待面试</p>
               ) : (
                 <ul className="followup-list">
-                  {dailyFollowup.interview.map((item, index) => (
-                    <li key={`i-${index}`}>{item.name} · {item.company} · {item.title}<span className="followup-time">{item.time}</span></li>
+                  {dailyFollowup.interview.map((item) => todoRow(item, item.time, "interview"))}
+                </ul>
+              )}
+            </div>
+            <div className="followup-col">
+              <h3>我的提醒 <span className="followup-count">{dailyFollowup.reminders.length}</span></h3>
+              {dailyFollowup.reminders.length === 0 ? (
+                <p className="followup-empty">暂无提醒（可在人才库某一行「建提醒」）</p>
+              ) : (
+                <ul className="followup-list">
+                  {dailyFollowup.reminders.map((reminder) => (
+                    <li key={reminder.id}>
+                      <label className="followup-item">
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          onChange={() => onCompleteReminder(reminder)}
+                          aria-label={`完成 ${reminder.name} 的提醒`}
+                          data-testid={`todo-reminder-${reminder.id}`}
+                        />
+                        {/* 人名取建立时的快照，候选人改名或删除后仍显示这个名字。 */}
+                        <span>{reminder.name} · {reminder.content}</span>
+                      </label>
+                    </li>
                   ))}
                 </ul>
               )}

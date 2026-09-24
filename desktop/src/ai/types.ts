@@ -3,13 +3,19 @@ export type AiProviderId =
   | "kimi_open"
   | "kimi_code"
   | "qwen"
+  | "qwen_code"
   | "zhipu"
+  | "zhipu_code"
   | "siliconflow"
   | "custom_openai";
 
 export type ModelRole = "fast_text" | "reasoning_text" | "vision";
+/** 思考强度档位，取值来自模型档案声明的 `supported_reasoning_efforts`。 */
+export type ReasoningEffort = "low" | "high" | "max";
 export type ProtectionLevel = "none" | "single" | "dual";
 export type CircuitState = "closed" | "open" | "half_open";
+/** 探测能力项：鉴权、文本、JSON、思考、视觉。 */
+export type AiCapabilityKey = "auth" | "text" | "json" | "reasoning" | "vision";
 
 export interface AiConnectionView {
   connection_id: string;
@@ -20,7 +26,12 @@ export interface AiConnectionView {
   base_url_override: string | null;
   parameter_style: string | null;
   models: Partial<Record<ModelRole, string>>;
+  /** 每个角色槽位的思考强度；缺省表示按模型自身默认行为。 */
+  reasoning_efforts?: Partial<Record<ModelRole, ReasoningEffort>>;
   probed_roles: ModelRole[];
+  /** 上次探测的五项能力结果；老配置可能为空（按旧口径保存过）。 */
+  probed_capabilities?: Partial<Record<AiCapabilityKey, boolean>>;
+  probe_version?: number | null;
   enabled: boolean;
 }
 
@@ -40,6 +51,7 @@ export interface AiConnectionUpdate {
   base_url_override?: string | null;
   parameter_style?: string | null;
   models?: Partial<Record<ModelRole, string>>;
+  reasoning_efforts?: Partial<Record<ModelRole, ReasoningEffort>>;
   enabled?: boolean;
 }
 

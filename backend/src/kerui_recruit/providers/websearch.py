@@ -63,12 +63,14 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
     def search(self, query: str, limit: int = 10) -> list[WebSearchResult]:
         client = self._client or httpx.Client(timeout=40.0)
+        # 只取摘要，不取正文：``advanced`` + ``include_raw_content`` 是最慢档位，
+        # 且 raw_content 无长度上限，会把下游切分与重排的输入撑爆。
+        # 正文由 BdAgent 按来源质量挑前 K 个页面单独抓取。
         request_json: dict = {
             "api_key": self.api_key,
             "query": query,
             "max_results": limit,
-            "search_depth": "advanced",
-            "include_raw_content": True,
+            "search_depth": "basic",
         }
         if self.exclude_domains:
             request_json["exclude_domains"] = self.exclude_domains

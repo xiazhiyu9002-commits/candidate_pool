@@ -50,7 +50,11 @@ def can_serve_role(profile: ModelProfile, role: ModelRole) -> bool:
 
     - 声明了该角色 → 可服务；
     - 思考槽位（reasoning_text）额外放行「可选思考（auto）」与「强制思考（required）」模型，
-      使 flash 这类可思考的快速模型也能被手动填入思考槽位并在请求时打开思考。
+      使 flash 这类可思考的快速模型也能被手动填入思考槽位并在请求时打开思考；
+    - 快速槽位（fast_text）额外放行「强制思考（required）」模型，让使用者能把更强的
+      思考模型填进快速模型的位置来换取质量（代价是变慢，这个取舍交给使用者）。
+      强制思考模型没有「关思考」开关，放进快速槽位后按它自身的默认行为运行，
+      参数映射（``apply_reasoning``）不会给它发不支持的字段。
     """
     if role in profile.roles:
         return True
@@ -59,6 +63,8 @@ def can_serve_role(profile: ModelProfile, role: ModelRole) -> bool:
             ReasoningMode.AUTO in profile.supported_reasoning_modes
             or ReasoningMode.REQUIRED in profile.supported_reasoning_modes
         )
+    if role == ModelRole.FAST_TEXT:
+        return ReasoningMode.REQUIRED in profile.supported_reasoning_modes
     return False
 
 

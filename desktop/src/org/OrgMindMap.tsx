@@ -418,14 +418,17 @@ export function OrgMindMap({
                   }}
                 />
               ) : (
-                <>
+                // 名称与副标题必须包在**同一个**纵向容器里：直接作为 `.org-node` 的两个子节点时，
+                // 它们各自都会命中 `.org-node > span` 的 `flex:1`（flex-basis:0），于是各拿一半宽度、
+                // 双双被 ellipsis 截断——节点宽度是按 max(名称宽, 副标题宽) 算出来的，等于白算。
+                <span className="org-node-text">
                   <span className="org-node-name">{node.name}{node.is_key ? " ★" : ""}</span>
                   <span className="org-node-sub">
                     {node.kind === "department"
                       ? (node.team_size != null ? `${node.team_size} 人` : "")
                       : [node.title, node.job_level].filter(Boolean).join(" · ")}
                   </span>
-                </>
+                </span>
               )}
 
               {hasChildren && isCollapsed && (

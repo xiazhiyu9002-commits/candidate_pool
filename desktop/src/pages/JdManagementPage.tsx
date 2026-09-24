@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent } from "react";
 import type { AiReviewState, CandidateSearchItem, ImportedJd, JdListItem, JdStatus } from "../App";
+import type { ProfileGenerationProgress } from "../api/client";
 import { EditableCell } from "../components/EditableCell";
-import { CANDIDATE_COLUMNS, COLUMN_LABELS, SEARCH_REVIEW_COLUMN_KEYS, candidateColumnText, type CandidateColumnKey } from "../components/CandidateTable";
+import { CANDIDATE_COLUMNS, COLUMN_LABELS, EMPTY_PROFILE_TEXT, SEARCH_REVIEW_COLUMN_KEYS, candidateColumnText, profilePoints, type CandidateColumnKey } from "../components/CandidateTable";
 import { Button, HoverText, OverflowMenu, StatusBadge, stripEvidenceRefs } from "../components/ui";
 
 export const JD_STATUS_OPTIONS: { value: JdStatus; label: string }[] = [
@@ -37,13 +38,17 @@ export interface JdManagementPageProps {
   onUpdateJdField: (jdId: string, field: string, value: unknown) => Promise<void>;
   /** 保存画像：直接落库（画像文本变化时后端按 AI 重解析硬条件并覆盖）。 */
   onSaveJdProfile: (jdId: string, profile: string) => Promise<void>;
-  onRegenerateJdProfile: (jdId: string, instruction: string) => Promise<string | null>;
+  onRegenerateJdProfile: (
+    jdId: string,
+    instruction: string,
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ) => Promise<string | null>;
   onMatchJd: (jd: JdListItem) => void;
   onDeleteJd: (jd: JdListItem) => void;
   onOpenParsed: (jd: JdListItem) => void;
   onReparseFailed: () => void;
   onToggleJdSource: (revisionId: string) => void;
-  jdMatch: { title: string; company: string; location: string; run_id: string | null; items: CandidateSearchItem[] } | null;
+  jdMatch: { title: string; company: string; location: string; run_id: string | null; items: CandidateSearchItem[]; hardFilters: { kind: string; alternatives: string[]; source_text: string }[]; relaxed: string[] } | null;
   jdReview: AiReviewState | null;
   jdMatchingId: string | null;
   onJdAiReview: () => void;
@@ -62,12 +67,6 @@ export interface JdManagementPageProps {
   onBulkDeleteJds: (jdIds: string[]) => void;
 }
 
-function resumeProfilePoints(p: { ai_profile_points?: { text: string }[]; ai_profile_summary?: string | null } | null | undefined): string[] {
-  const points = (p?.ai_profile_points ?? []).map((x) => x.text).filter(Boolean);
-  if (points.length) return points;
-  return (p?.ai_profile_summary ?? "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
-}
-
 function jdProfilePoints(p: { candidate_profile_points?: { text: string }[]; candidate_profile?: string | null } | null | undefined): string[] {
   const points = (p?.candidate_profile_points ?? []).map((x) => x.text).filter(Boolean);
   if (points.length) return points;
@@ -79,12 +78,27 @@ export type ReviewVerdictItem = {
   candidate_id?: string;
   jd_revision_id?: string;
   verdict?: string;
-  reasons?: string[];
-  cautions?: string[];
+  /** 三段符合点，顺序固定：项目 → 工作经历 → 技术栈。 */
+  project_match?: string[];
+  experience_match?: string[];
+  tech_match?: string[];
+  /** 风险点（缺口/前置资格未通过等）。 */
+  risks?: string[];
   /** 该条复核失败（调用出错/超时）：仍按待核展示，但要让用户看出「没复核成功」。 */
   failed?: boolean;
   error?: string;
+  /** 超出单次复核上限、本次未调用模型：与「已复核但待核」区分展示。 */
+  skipped?: boolean;
 };
+
+/** 三段符合点按「项目 → 工作经历 → 技术栈」顺序拼成悬停文本。 */
+export function reviewMatchLines(item: ReviewVerdictItem | undefined): string[] {
+  return [
+    ...(item?.project_match ?? []),
+    ...(item?.experience_match ?? []),
+    ...(item?.tech_match ?? []),
+  ];
+}
 
 export function reviewVerdictLabel(verdict: string | undefined): string {
   if (verdict === "recommend") return "推荐";
@@ -133,12 +147,14 @@ export function reviewVerdictsByResultId(resultRef: string | null): Record<strin
     const map: Record<string, ReviewVerdictItem> = {};
     for (const item of list) {
       if (!item.match_result_id) continue;
-      // 符合点/注意点在此统一清洗掉证据编号（如「（projects[0]、experiences[1]）」，含全角括号），
+      // 符合点/风险点在此统一清洗掉证据编号（如「（projects[0]、experiences[1]）」，含全角括号），
       // 保证「人匹配岗位」与「岗位匹配人」两处展示一致。
       map[item.match_result_id] = {
         ...item,
-        reasons: (item.reasons ?? []).map(stripEvidenceRefs).filter(Boolean),
-        cautions: (item.cautions ?? []).map(stripEvidenceRefs).filter(Boolean),
+        project_match: (item.project_match ?? []).map(stripEvidenceRefs).filter(Boolean),
+        experience_match: (item.experience_match ?? []).map(stripEvidenceRefs).filter(Boolean),
+        tech_match: (item.tech_match ?? []).map(stripEvidenceRefs).filter(Boolean),
+        risks: (item.risks ?? []).map(stripEvidenceRefs).filter(Boolean),
       };
     }
     return map;
@@ -183,24 +199,28 @@ export function JdManagementPage(props: JdManagementPageProps) {
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const [jdMatchPage, setJdMatchPage] = useState(1);
   const [regeneratingJdIds, setRegeneratingJdIds] = useState<Record<string, boolean>>({});
+  /** 生成阶段的服务端文案，按 JD 分开存（列表里可能同时有一行在重生成）。 */
+  const [regenStages, setRegenStages] = useState<Record<string, string>>({});
   const [savingJdIds, setSavingJdIds] = useState<Record<string, boolean>>({});
   const [selectedJdIds, setSelectedJdIds] = useState<Set<string>>(new Set());
 
   const jdReviewVerdicts = reviewVerdictsByResultId(jdReview?.result_ref ?? null);
 
-  // 「亮点/风险点」只由搜索侧复核产出：岗位侧已有「符合点/注意点」两列，不重复展示。
+  // 「亮点/风险点」只由搜索侧复核产出：岗位侧已有「符合点/风险点」两列，不重复展示。
   const orderedColumns = columnOrder.filter(
     (key) => visibleColumns[key] && !SEARCH_REVIEW_COLUMN_KEYS.includes(key),
   );
 
-  // 基础匹配分层（推荐在前）+ AI 复核结论（推荐 > 待核 > 不推荐）二级排序。
+  // 复核完成后**复核结论是主排序键**（推荐 > 待核 > 不推荐），基础匹配分层降为同结论内的次级键；
+  // 复核未完成时才按「基础分层 + 分数」排。
+  // 注意：早期版本把基础分层当第一排序键，列表会被切成「方向推荐」与「待核」两段，
+  // 每段内部才按结论排，于是出现「待核 → 推荐×N → 待核×M → 不推荐」这种看着没排序的现象。
   const reviewCompleted = jdReview?.status === "SUCCESS" && jdReview?.result_ref != null;
   const sortedMatchItems = useMemo(() => {
     if (!jdMatch) return [];
     return [...jdMatch.items].sort((a, b) => {
       const tierA = a.match_tier === "recommend" ? 0 : 1;
       const tierB = b.match_tier === "recommend" ? 0 : 1;
-      if (tierA !== tierB) return tierA - tierB;
       if (reviewCompleted) {
         const verdictA = a.result_id ? jdReviewVerdicts[a.result_id]?.verdict : undefined;
         const verdictB = b.result_id ? jdReviewVerdicts[b.result_id]?.verdict : undefined;
@@ -208,6 +228,7 @@ export function JdManagementPage(props: JdManagementPageProps) {
         const rankB = reviewVerdictRank(verdictB);
         if (rankA !== rankB) return rankA - rankB;
       }
+      if (tierA !== tierB) return tierA - tierB;
       return b.score - a.score;
     });
   }, [jdMatch, reviewCompleted, jdReviewVerdicts]);
@@ -236,8 +257,14 @@ export function JdManagementPage(props: JdManagementPageProps) {
   async function regenerateProfile(jd: JdListItem) {
     const instruction = regenInstructions[jd.jd_id] ?? "";
     setRegeneratingJdIds((current) => ({ ...current, [jd.jd_id]: true }));
+    setRegenStages((current) => ({ ...current, [jd.jd_id]: "" }));
     try {
-      const newProfile = await onRegenerateJdProfile(jd.jd_id, instruction);
+      const newProfile = await onRegenerateJdProfile(
+        jd.jd_id,
+        instruction,
+        (progress: ProfileGenerationProgress) =>
+          setRegenStages((current) => ({ ...current, [jd.jd_id]: progress.message })),
+      );
       // 后端只生成不落库，把新画像写入本地草稿，供「保存画像」提交。
       if (newProfile != null) {
         setProfileDrafts((current) => ({ ...current, [jd.jd_id]: newProfile }));
@@ -246,6 +273,7 @@ export function JdManagementPage(props: JdManagementPageProps) {
       // 错误已由 App 层通过 setError 展示。
     } finally {
       setRegeneratingJdIds((current) => ({ ...current, [jd.jd_id]: false }));
+      setRegenStages((current) => ({ ...current, [jd.jd_id]: "" }));
     }
     setRegenInstructions((current) => ({ ...current, [jd.jd_id]: "" }));
   }
@@ -319,7 +347,7 @@ export function JdManagementPage(props: JdManagementPageProps) {
               variant="danger"
               size="sm"
               onClick={() => {
-                if (window.confirm(`确定永久删除选中的 ${selectedJdIds.size} 个岗位吗？关联的招聘流程会级联删除，此操作不可撤销。`)) {
+                if (window.confirm(`确定永久删除选中的 ${selectedJdIds.size} 个岗位吗？岗位会被永久删除，关联的招聘流程会保留（岗位信息转为快照），此操作不可撤销。`)) {
                   onBulkDeleteJds(Array.from(selectedJdIds));
                   setSelectedJdIds(new Set());
                 }
@@ -420,6 +448,9 @@ export function JdManagementPage(props: JdManagementPageProps) {
                                     {regeneratingJdIds[jd.jd_id] ? "处理中…" : "AI 重新生成"}
                                   </Button>
                                 </div>
+                                {regenStages[jd.jd_id] && (
+                                  <p role="status" className="muted">{regenStages[jd.jd_id]}</p>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -449,6 +480,18 @@ export function JdManagementPage(props: JdManagementPageProps) {
             {jdMatch && <span className="card__count"> 为「{jdMatch.title}」匹配到 {jdMatch.items.length} 人</span>}
             {jdMatch && jdMatch.items.some((item) => item.eligibility === "pending") && (
               <span className="muted">（{jdMatch.items.filter((item) => item.eligibility === "pending").length} 人方向待核）</span>
+            )}
+            {/* JD 硬条件已下推为检索过滤，必须明示，否则用户无法判断结果为什么变少。 */}
+            {jdMatch && jdMatch.hardFilters.length > 0 && (
+              <div className="muted" style={{ fontSize: 12, fontWeight: 400, marginTop: 4 }}>
+                已作为检索过滤的硬条件：
+                {jdMatch.hardFilters.map((f) => `${f.alternatives.join(" / ")}（原文：${f.source_text}）`).join("；")}
+              </div>
+            )}
+            {jdMatch && jdMatch.relaxed.length > 0 && (
+              <div style={{ fontSize: 12, fontWeight: 400, marginTop: 4, color: "#b45309" }}>
+                硬条件「{jdMatch.relaxed.join("、")}」无匹配候选人，已自动放宽后重检；下方结果不满足这些条件。
+              </div>
             )}
           </div>
           <div className="card__tools">
@@ -521,7 +564,7 @@ export function JdManagementPage(props: JdManagementPageProps) {
                   <tr>
                     <th className="col-name">姓名</th>
                     <th className="col-review">符合点</th>
-                    <th className="col-review">注意点</th>
+                    <th className="col-review">风险点</th>
                     {orderedColumns.map((key) => <th key={key}>{COLUMN_LABELS[key]}</th>)}
                     <th className="col-actions">操作</th>
                   </tr>
@@ -533,6 +576,9 @@ export function JdManagementPage(props: JdManagementPageProps) {
                       <tr key={item.candidate_id}>
                         <td className="col-name">
                           <strong>{item.name}</strong>
+                          {item.business_match && (
+                            <span className="muted" title="业务方向与岗位一致，优先展示" style={{ marginLeft: 8, fontSize: 12 }}>业务一致</span>
+                          )}
                           {item.match_tier === "needs_review" && !v && (
                             <span className="muted" title={item.direction_reason || ""} style={{ marginLeft: 8, fontSize: 12 }}>待核</span>
                           )}
@@ -544,16 +590,19 @@ export function JdManagementPage(props: JdManagementPageProps) {
                           {v?.failed && (
                             <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>复核失败</span>
                           )}
+                          {v?.skipped && (
+                            <span className="muted" title={(v.risks || []).join("\n")} style={{ marginLeft: 6, fontSize: 12 }}>未复核</span>
+                          )}
                         </td>
                         <td className="col-review">
-                          <HoverText text={(v?.reasons || []).join("\n")} />
+                          <HoverText text={reviewMatchLines(v).join("\n")} />
                         </td>
                         <td className="col-review">
-                          <HoverText text={(v?.cautions || []).join("\n")} />
+                          <HoverText text={(v?.risks || []).join("\n")} />
                         </td>
                         {orderedColumns.map((key) => {
                           if (key === "profile") {
-                            const points = resumeProfilePoints(item.parsed_data);
+                            const points = profilePoints(item.parsed_data);
                             const profileText = points.length > 0 ? points.join("\n") : (item.parsed_data?.ai_profile_summary ?? "");
                             return (
                               <td key={key}>
@@ -566,7 +615,7 @@ export function JdManagementPage(props: JdManagementPageProps) {
                                     item.parsed_data?.ai_profile_stale ?? false,
                                   )}
                                 >
-                                  <HoverText text={profileText} />
+                                  <HoverText text={profileText || EMPTY_PROFILE_TEXT} />
                                 </button>
                               </td>
                             );

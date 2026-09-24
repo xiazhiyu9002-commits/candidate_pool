@@ -48,6 +48,43 @@ async def test_runtime_processes_an_import_without_external_services(tmp_path: P
     assert page.items[0].candidate_id == imported.candidate_id
 
 
+def test_bd_synthesis_uses_fast_model_to_stay_interactive(tmp_path: Path) -> None:
+    """BD 线索综合必须留在快速档。
+
+    它原先放在推理档 + ``ReasoningMode.REQUIRED``，理由是「需要跨片段取舍」；但那条
+    取舍其实已由上一步的 reranker 完成，综合只剩「抽取 + 逐字引用」。
+    实测火山引擎 deepseek-v4-pro 在 REQUIRED 思考下综合 10 个证据片段稳定超过 180 秒，
+    会把每一次 BD 检索都掐断，表现为「重排之后就结束、没有数据」。
+    """
+    from kerui_recruit.providers.ai.contracts import ModelRole
+
+    settings = Settings(data_root=tmp_path / "data", session_token="launch-token")
+    runtime = build_runtime(settings)
+    generator = runtime.services.bd_agent.synthesizer
+    assert generator is not None
+    # `_llm` 是 SynthesisGenerator 内部持有的 TaskGenerationClient，role 决定路由槽位。
+    assert getattr(generator, "_llm").role == ModelRole.FAST_TEXT
+
+
+def test_jd_profile_uses_fast_model_to_stay_within_the_interactive_budget(tmp_path: Path) -> None:
+    """岗位画像必须留在快速档。
+
+    原先是推理档 + ``ReasoningMode.REQUIRED``，理由是「需要跨条件取舍」。实测（2026-09-22，
+    阿里 `qwen3.8-max`）150 秒仍未返回、阶段停在 `draft`，`regen-profile` 因此稳定 504
+    `E_PROFILE_TIMEOUT`，§6.1 的「单次生成 ≤ 90 秒」根本达不到。
+    与 BD 综合（`test_bd_synthesis_uses_fast_model_to_stay_interactive`）同一条思路：
+    真正的取舍已由硬条件与重排完成。改动会被这条断言挡住。
+    """
+    from kerui_recruit.providers.ai.contracts import ModelRole
+
+    settings = Settings(data_root=tmp_path / "data", session_token="launch-token")
+    runtime = build_runtime(settings)
+    generator = runtime.services.backfill_service.jd_generator
+    assert generator is not None
+    # `_llm` 是 JdProfileGenerator 内部持有的 TaskGenerationClient，role 决定路由槽位。
+    assert getattr(generator, "_llm").role == ModelRole.FAST_TEXT
+
+
 @pytest.mark.asyncio
 async def test_runtime_app_reports_readiness_after_local_stores_open(tmp_path: Path) -> None:
     """The desktop shell must not show the UI before the embedded stores are ready."""

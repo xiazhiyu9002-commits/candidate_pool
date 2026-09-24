@@ -3,6 +3,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 
+from kerui_recruit.search.cities import (
+    CITY_GROUPS,
+    CITY_NAMES,
+    DISTRICT_SUFFIXES,
+    PROVINCE_PREFIXES,
+)
 from kerui_recruit.search.contracts import CandidateFilters
 from kerui_recruit.search.degrees import DEGREE_ALIASES, normalize_degree
 from kerui_recruit.search.lexicon import LexicalConcept, concepts_from_query, normalize_skill
@@ -25,11 +31,9 @@ class ParsedQuery:
     conditions: tuple[ParsedCondition, ...] = ()
 
 
-_LOCATIONS = (
-    "北京", "上海", "深圳", "广州", "杭州", "成都", "南京", "武汉",
-    "苏州", "西安", "重庆", "天津", "长沙", "郑州", "青岛", "厦门",
-    "合肥", "东莞", "佛山", "宁波", "大连", "济南",
-)
+# 查询侧城市词典：规则解析与 LLM 解析的枚举白名单共用同一份（全国地级市 + 直辖市 + 港澳）。
+# 索引侧 ``location_terms`` 的归一化用同一份表（``search/cities.py``），两侧口径必须逐字一致。
+LOCATIONS = CITY_NAMES
 
 _SCHOOL_LEVELS = ("985", "211", "双一流", "海外", "普通")
 
@@ -38,6 +42,16 @@ _SCHOOL_SUFFIXES = (
     "大学", "学院", "学校", "师范", "交通", "财经", "理工", "医科",
     "农业", "政法", "外国语", "邮电", "海洋", "石油", "电力", "工业",
     "科技", "航天", "航空", "建筑", "林业", "地质", "矿业", "民族",
+)
+
+# 地点剥离：一次扫描吃掉「省级前缀 + 城市（或北上广深组合写法） + 市/省后缀」，
+# 避免留下「广东省」「市」这类无意义关键词。城市名后紧跟学校后缀（北京大学）或
+# 区县后缀（朝阳区）时不剥离，保留原词交给词法召回。
+_LOCATION_STRIP_RE = re.compile(
+    rf"(?:(?:{'|'.join(re.escape(name) for name in sorted(PROVINCE_PREFIXES, key=len, reverse=True))}))?"
+    rf"(?:{'|'.join(re.escape(name) for name in sorted((*CITY_GROUPS, *CITY_NAMES), key=len, reverse=True))})"
+    rf"(?!{'|'.join(_SCHOOL_SUFFIXES)}|{'|'.join(DISTRICT_SUFFIXES)})"
+    rf"(?:市|省)?"
 )
 
 # 毕业年份：4 位数字 + 年 + 毕业/届/级/入学，不能当作工作经验年限。
@@ -211,15 +225,25 @@ def _is_school_entity(text: str, match) -> bool:
     return text[match.end():].startswith(_SCHOOL_SUFFIXES)
 
 
+def _is_district_reference(text: str, match) -> bool:
+    """城市名后紧跟区/县/镇/乡时属于区县写法（「朝阳区」）。
+
+    与索引侧 ``cities.canonical_city`` 同一口径：朝阳既是辽宁地级市、也是北京/长春的区，
+    语义不确定时不当作地点条件，词本身留在关键词里照常参与词法召回。
+    """
+    return text[match.end():].startswith(DISTRICT_SUFFIXES)
+
+
 def _parse_locations(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """分离现居地与求职意向地（意向地可为多值或关系）。
 
     城市名后紧跟学校后缀（如「北京大学」「上海交通大学」）时属于学校实体，
     不作为地点；显式「现居/期望」等标记后的城市名仍按地点提取。
+    「北上广深」这类组合写法展开成多个城市。
     """
     preferred_markers = ("期望", "意向", "求职", "目标", "想去")
     current_markers = ("现居", "目前", "常驻", "居住")
-    tokens = "|".join((*preferred_markers, *current_markers, *_LOCATIONS))
+    tokens = "|".join((*preferred_markers, *current_markers, *CITY_GROUPS, *LOCATIONS))
     locations: list[str] = []
     preferred: list[str] = []
     destination = locations
@@ -229,8 +253,14 @@ def _parse_locations(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
             destination = preferred
         elif token in current_markers:
             destination = locations
-        elif token in _LOCATIONS and _is_school_entity(text, match):
+        elif token in CITY_GROUPS:
+            for city in CITY_GROUPS[token]:
+                if city not in destination:
+                    destination.append(city)
+        elif token in LOCATIONS and _is_school_entity(text, match):
             continue  # 学校实体，不作为地点
+        elif token in LOCATIONS and _is_district_reference(text, match):
+            continue  # 区县写法（「朝阳区」），语义不确定，不作为地点
         elif token not in destination:
             destination.append(token)
     return tuple(locations), tuple(preferred)
@@ -276,13 +306,7 @@ def _strip_conditions(text: str) -> str:
     cleaned = _EXCLUDE_RE.sub(" ", cleaned)
     for token in DEGREE_ALIASES:
         cleaned = re.sub(re.escape(token), " ", cleaned, flags=re.IGNORECASE)
-    for location in _LOCATIONS:
-        # 城市名后紧跟学校后缀时保留完整学校名，仅剥离真正的地点 token。
-        cleaned = re.sub(
-            re.escape(location) + rf"(?!{'|'.join(_SCHOOL_SUFFIXES)})",
-            " ",
-            cleaned,
-        )
+    cleaned = _LOCATION_STRIP_RE.sub(" ", cleaned)
     for token in _SCHOOL_LEVELS:
         cleaned = cleaned.replace(token, " ")
     # 去掉剩余修饰词。

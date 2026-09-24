@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select, update
 
 from kerui_recruit.api.errors import ApiError
+from kerui_recruit.api.profile_stream import profile_generation_stream, wants_event_stream
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.bulk.service import (
     bulk_delete_candidates,
@@ -36,6 +38,8 @@ from kerui_recruit.direction.policy import (
 )
 from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers import profile_spec
+from kerui_recruit.providers.errors import ProviderError
+from kerui_recruit.providers.profile_pair import REGEN_TIMEOUT_SECONDS, repaired_profile_view
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 from kerui_recruit.resumes.deletion import CandidateDeletionService
 from kerui_recruit.resumes.extract import LegacyDocConversionError, convert_doc_to_pdf
@@ -43,6 +47,7 @@ from kerui_recruit.resumes.normalize import derive_education_compat, normalize_r
 from kerui_recruit.duplicates.service import normalize_email, normalize_phone
 from kerui_recruit.resumes.structured import ParsedResume
 from kerui_recruit.resumes.validity import check_parsed_resume
+from kerui_recruit.resumes.work_years_rollover import established_age_baseline
 from kerui_recruit.schools.reference import recompute_educations
 from kerui_recruit.search.sync import enqueue_sync
 from kerui_recruit.search.contracts import SearchChunk
@@ -149,6 +154,8 @@ class CandidateListItem(BaseModel):
     parsed_data: dict | None
     error_code: str | None = None
     error_message: str | None = None
+    # 沟通记录：候选人级自由文本，**不在 parsed_data 里**，也不参与画像与索引。
+    communication_note: str | None = None
 
 
 class CandidatePage(BaseModel):
@@ -189,8 +196,11 @@ def _candidate_items(services: AppServices, rows) -> list[CandidateListItem]:
         status=candidate.status, revision_status=revision.status,
         phone=(encryption.decrypt(contact.phone_encrypted)
                if encryption is not None and contact is not None and contact.phone_encrypted else None),
-        original_filename=revision.original_filename, parsed_data=revision.parsed_data,
+        original_filename=revision.original_filename,
+        # 展示视图：历史遗留的碎片分点在读取时按整体段落重算（不写库）。
+        parsed_data=repaired_profile_view(revision.parsed_data),
         error_code=revision.error_code, error_message=revision.error_message,
+        communication_note=candidate.communication_note,
     ) for candidate, revision, contact in rows]
 
 
@@ -712,6 +722,34 @@ def _reindex_metadata(services: AppServices, revision_id: str, field: str, value
     index.upsert(updated)
 
 
+class CandidateCommunicationNoteUpdate(BaseModel):
+    """沟通记录：单条自由文本，整条覆盖式保存（空字符串表示清空）。"""
+
+    note: str = Field(default="", max_length=2000)
+
+
+@router.put("/candidate/{candidate_id}/communication-note")
+def update_candidate_communication_note(
+    candidate_id: str, command: CandidateCommunicationNoteUpdate, request: Request
+) -> dict:
+    """保存候选人的沟通记录。
+
+    刻意与 `PUT /candidate/{id}/field` 分开：后者编辑的是 `parsed_data`，会触发
+    画像过期判定（`ai_profile_stale`）与索引重建入队。沟通记录是**候选人级备注**，
+    放进 parsed_data 会顺着画像污染向量，所以这里只写 `candidate.communication_note`，
+    不碰 revision、不碰画像状态、不入队索引。
+    """
+    services: AppServices = request.app.state.services
+    note = command.note.strip()
+    with services.session_factory() as session:
+        candidate = session.get(Candidate, candidate_id)
+        if candidate is None:
+            raise ApiError(404, "E_CANDIDATE_NOT_FOUND", "候选人不存在")
+        candidate.communication_note = note or None
+        session.commit()
+    return {"candidate_id": candidate_id, "communication_note": note or None}
+
+
 class CandidateFieldUpdate(BaseModel):
     field: str
     value: Any = None
@@ -884,6 +922,11 @@ def update_candidate_parsed(
         if _PROFILE_INPUT_FIELDS & updates.keys() and parsed.get("ai_profile_source") == "ai":
             parsed["ai_profile_stale"] = True
 
+        # 人工改过年龄后仍要逐年增长：把基准重置为「人工值 + 当年」，否则下一次日滚动
+        # 会按旧基准把人工值覆盖回去。
+        if "age" in updates and parsed.get("age") is not None:
+            parsed.update(established_age_baseline(int(parsed["age"]), datetime.now().year))
+
         try:
             ParsedResume.model_validate(parsed)
         except ValidationError as error:
@@ -905,20 +948,62 @@ class RegenCandidateProfileRequest(BaseModel):
     instruction: str = Field(default="", max_length=2000)
 
 
-@router.post("/candidate/{candidate_id}/regen-profile")
-async def regenerate_candidate_profile(candidate_id: str, command: RegenCandidateProfileRequest, request: Request) -> dict:
-    """重新生成候选人 AI 画像；生成失败保留旧画像并返回明确错误。"""
-    services: AppServices = request.app.state.services
+def _candidate_profile_error(error: BaseException) -> ApiError:
+    """生成期异常 → ApiError。**同步与 SSE 两条路径共用这一份**，否则同一个失败会给出不同的码。"""
+    if isinstance(error, ApiError):
+        return error
+    if isinstance(error, asyncio.TimeoutError):
+        return ApiError(
+            504, "E_PROFILE_TIMEOUT",
+            f"画像生成超过 {REGEN_TIMEOUT_SECONDS:.0f} 秒未返回，已放弃本次生成；原画像保留，请稍后重试。",
+        )
+    if isinstance(error, LookupError):
+        return ApiError(404, "E_CANDIDATE_NOT_FOUND", str(error))
+    if isinstance(error, ProviderError):
+        # 供应商不可用（E_AI_NO_PROVIDER / 限流 / 鉴权）不是内部错误：映射成 502/503，
+        # 前端才能区分「可重试的服务不可用」与「真出错了」。实测原来一律压成 500。
+        return ApiError(error.http_status, error.code, error.user_message, error.details)
+    return ApiError(500, "E_PROFILE_GENERATION_FAILED", f"画像生成失败：{error}")
+
+
+async def _generate_candidate_profile(
+    services: AppServices, candidate_id: str, instruction: str | None, on_stage=None
+) -> dict:
+    """生成一次候选人画像（不落库）。同步与 SSE 两条路径的唯一实现。"""
     if services.backfill_service is None:
         raise ApiError(500, "E_PROFILE_UNAVAILABLE", "画像生成服务不可用")
-    try:
-        return await services.backfill_service.regenerate_candidate_profile(
-            candidate_id, instruction=command.instruction or None
+    # 服务端硬超时：模型抖动时给出明确文案，而不是让界面一直转圈（问题 #6 的一半）。
+    # 取 `REGEN_TIMEOUT_SECONDS`（略大于画像重写预算），超时后重写预算也就没有意义了。
+    return await asyncio.wait_for(
+        services.backfill_service.regenerate_candidate_profile(
+            candidate_id, instruction=instruction, on_stage=on_stage
+        ),
+        timeout=REGEN_TIMEOUT_SECONDS,
+    )
+
+
+@router.post("/candidate/{candidate_id}/regen-profile")
+async def regenerate_candidate_profile(
+    candidate_id: str, command: RegenCandidateProfileRequest, request: Request
+):
+    """重新生成候选人 AI 画像；生成失败保留旧画像并返回明确错误。
+
+    `Accept: text/event-stream` 时改为 SSE，先推阶段（`loading`/`draft`/`repair`）再推结果。
+    详见 `api/profile_stream.py`。
+    """
+    services: AppServices = request.app.state.services
+    if wants_event_stream(request):
+        return profile_generation_stream(
+            lambda on_stage: _generate_candidate_profile(
+                services, candidate_id, command.instruction or None, on_stage),
+            translate=_candidate_profile_error,
+            timeout_seconds=REGEN_TIMEOUT_SECONDS,
         )
-    except LookupError as error:
-        raise ApiError(404, "E_CANDIDATE_NOT_FOUND", str(error)) from error
+    try:
+        return await _generate_candidate_profile(
+            services, candidate_id, command.instruction or None)
     except Exception as error:
-        raise ApiError(500, "E_PROFILE_GENERATION_FAILED", f"画像生成失败：{error}") from error
+        raise _candidate_profile_error(error) from error
 
 
 @router.delete("/candidate/{candidate_id}")
@@ -999,6 +1084,11 @@ def bulk_download_endpoint(command: BulkRequest, request: Request) -> Response:
         media_type="application/zip",
         headers={
             "Content-Disposition": 'attachment; filename="resumes_batch.zip"',
-            "X-Bulk-Result": summary[:2000],
+            # HTTP 头的值只能装 latin-1，而这段摘要会带上中文失败原因（「无有效原件」
+            # 「原始文件缺失」）。直接放原文会让**整批下载**以 500 收场，而不是「部分成功」——
+            # 2026-09-22 全量接口探针实测就挂在这里：
+            #     'latin-1' codec can't encode characters in position 37（= uuid 之后的那个冒号）
+            # 按 RFC 3986 百分号编码后再放进头里；前端只把响应体当 ZIP，契约不变。
+            "X-Bulk-Result": quote(summary[:2000], safe=",=:;"),
         },
     )

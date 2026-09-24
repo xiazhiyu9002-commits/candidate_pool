@@ -1,6 +1,12 @@
 # 国内主流 AI 双服务接入与自动故障切换设计
 
 > 修订：2026-09-13。本文已按当前工作区重新审计；后续若与 2026-09-12 的旧描述冲突，以本次修订为准。
+>
+> 修订：2026-09-20。目录扩展到 **9 个入口**，新增两个订阅套餐端点 `qwen_code`（阿里百炼 Coding Plan，`https://coding.dashscope.aliyuncs.com/v1`）与 `zhipu_code`（智谱 GLM Coding Plan，`https://open.bigmodel.cn/api/coding/paas/v4`）；`kimi_code` 的模型由 `kimi-for-coding` 改为订阅端点的 `k3`（`kimi-k3` 是开放平台模型 ID，不适用于该端点）。
+>
+> **连接数量上限已取消**：不再限制为 2 条，列表顺序即全局主备顺序——每个业务请求仍只取顺序最靠前的两个目标（主一次、备一次，最多两次远程调用），其余作为候补，主/备停用或冷却时顺位前移。因此 §5.1 与 §8 中「最多两个连接」的表述已失效。
+>
+> **§3.2 的 `interactive_only` 未启用**：2026-09-20 明确决策为「三个订阅预设均保持全场景 `allowed_contexts`，仅以 `subscription_warning` 提示订阅条款限制」。实施者不得据 §3.2 或验收标准第 12 条把 `kimi_code.allowed_contexts` 改回 `[interactive]`；`test_catalog.py::test_kimi_platforms_cannot_be_conflated` 按现网值断言全场景。
 
 ## 1. 背景与目标
 

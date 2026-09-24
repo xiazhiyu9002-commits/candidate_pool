@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -96,6 +97,7 @@ class OpenAIChatAdapter:
         http_client: httpx.AsyncClient,
         connection_id: str = "",
         provider_id: str = "",
+        client_provider: Callable[[], httpx.AsyncClient] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -103,6 +105,19 @@ class OpenAIChatAdapter:
         self.http_client = http_client
         self.connection_id = connection_id
         self.provider_id = provider_id
+        # 可选的「取客户端」回调：按**当前运行的事件循环**返回对应客户端。
+        #
+        # 为什么需要它：同一个 httpx 客户端不能跨事件循环复用——同步路径里的
+        # `asyncio.run(...)`（`providers/leads.py` / `mail/resume_gate.py`）会现开一个短命循环，
+        # 连接池里建立在那个循环上的连接在循环关闭后被主循环复用，就会抛
+        # `Event loop is closed`（实测 `org.import_parse` 偶发 500）。传了这个回调时
+        # 每次请求都现取，取到的必然属于当前循环。
+        self.client_provider = client_provider
+
+    def _client(self) -> httpx.AsyncClient:
+        if self.client_provider is not None:
+            return self.client_provider()
+        return self.http_client
 
     async def generate(
         self,
@@ -116,15 +131,35 @@ class OpenAIChatAdapter:
         apply_temperature(body, temperature=request.temperature, profile=profile)
         apply_reasoning(body, style=self.parameter_style, mode=request.reasoning, effort=request.reasoning_effort, profile=profile)
         apply_json_format(body, profile=profile, response_model=request.response_model)
+        # 只在调用方显式给了上界时才发：给结构化调用乱设小值会把 JSON 截断成
+        # `E_API_SCHEMA`，比慢更糟。所以默认一个字段都不发。
+        if request.max_tokens is not None:
+            body["max_tokens"] = request.max_tokens
 
         timeout = self._timeout(request.deadline_monotonic)
         try:
-            response = await self.http_client.post(
+            response = await self._client().post(
                 f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=body,
                 timeout=timeout,
             )
+        except httpx.TimeoutException as error:
+            # **这一支必须排在 `httpx.RequestError` 之前**：`TimeoutException` 是
+            # `RequestError` 的子类，顺序反了的话「对端没在预算内返回」会被报成
+            # 「无法连接 API 服务」，使用者按网络不通去查代理/DNS，而真实原因是供应商太慢。
+            # 实测智谱 glm-5.3（思考模型）的探测就是这样被误报成 E_API_NETWORK 的。
+            # 口径与 HTTP 408 的映射对齐（见 `providers/errors.py`），不新造错误码。
+            raise ProviderError(
+                code="E_API_TIMEOUT",
+                retryable=True,
+                user_message="API 请求超时",
+                category=FailureCategory.TIMEOUT,
+                switchable=True,
+                connection_id=self.connection_id,
+                provider_id=self.provider_id,
+                model=model,
+            ) from error
         except httpx.RequestError as error:
             raise ProviderError(
                 code="E_API_NETWORK",

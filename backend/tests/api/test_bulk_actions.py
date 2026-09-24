@@ -69,6 +69,33 @@ def test_bulk_force_ocr_enqueues_real_ocr_payload():
     assert enqueued[0].payload["use_vision"] is False
 
 
+def test_bulk_download_header_stays_ascii_when_items_fail():
+    """批量下载的失败摘要必须能真正写进 HTTP 头。
+
+    真机证据（2026-09-22 全量接口探针）：摘要里的中文失败原因（「无有效原件」）被直接放进
+    `X-Bulk-Result`，而响应头按 latin-1 编码 → **整批下载 500**，而不是「能下的下、
+    不能下的列在摘要里」；报错位置正是 uuid 之后那个冒号（`position 37`）。
+    """
+    from kerui_recruit.api.resumes import BulkRequest, bulk_download_endpoint
+
+    session = MagicMock()
+    session.scalar.return_value = None  # 没有可用修订 → 走中文失败分支
+    session_factory = MagicMock()
+    session_factory.return_value.__enter__.return_value = session
+    session_factory.return_value.__exit__.return_value = False
+
+    services = MagicMock()
+    services.session_factory = session_factory
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=services)))
+
+    response = bulk_download_endpoint(BulkRequest(ids=["0" * 36]), request)
+
+    value = response.headers["X-Bulk-Result"]
+    value.encode("latin-1")  # 不抛异常 = 真的能写进响应头
+    assert "无有效原件" not in value
+    assert "%E6%97%A0" in value  # 百分号编码后的「无」
+
+
 def test_bulk_reparse_enqueues_plain_reparse_payload():
     """「重新解析」不能退化成强制 OCR：正常页仍走文本/视觉解析。"""
     revision = ResumeRevision()
@@ -195,7 +222,7 @@ async def test_bulk_match_returns_rows_and_deduplicated_jd_details():
     services.match_service.record_reverse_run.return_value = SimpleNamespace(
         run_id="run-1", result_ids={"jdrev-1": "result-1"}
     )
-    services.match_service.score.return_value = SimpleNamespace(total=88.5)
+    services.match_service.score.return_value = SimpleNamespace(total=88.5, business_match=None, breakdown={})
 
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=services)))
     response = await bulk_match_candidates(

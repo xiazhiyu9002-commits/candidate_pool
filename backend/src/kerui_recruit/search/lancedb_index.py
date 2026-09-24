@@ -14,11 +14,132 @@ from lancedb.index import FTS
 
 from kerui_recruit.search.contracts import (
     CandidateFilters,
+    ChannelSignal,
+    EvidenceChunk,
     SearchChunk,
     SearchHit,
     SearchRequest,
 )
 from kerui_recruit.search.lexicon import is_curated_concept, tokenize_lexical_text
+
+# 证据包上限：概况 + 查询主证据 + 查询补充证据。
+EVIDENCE_CHUNK_LIMIT = 3
+# 融合路径保留的候选片段数：槽位选择要按「查询概念覆盖」在多个片段间比较，
+# 只留 3 条会让规则失去选择空间；最终展示/重排仍只取 3 个槽位。
+EVIDENCE_CANDIDATE_LIMIT = 12
+# 证据包总长度上限（Unicode 字符）。
+EVIDENCE_TEXT_BUDGET = 1200
+
+# 通道名。原查询向量与改写向量同属 vector family，只在 family 内取最大值，不双倍加权。
+CHANNEL_BM25 = "bm25"
+CHANNEL_VECTOR_ORIGINAL = "vector_original"
+CHANNEL_VECTOR_REWRITE = "vector_rewrite"
+# 公开 matched_channels 沿用「通道族」名（bm25 / vector），避免 API 与 desktop 展示口径漂移。
+PUBLIC_CHANNELS = {
+    CHANNEL_BM25: "bm25",
+    CHANNEL_VECTOR_ORIGINAL: "vector",
+    CHANNEL_VECTOR_REWRITE: "vector",
+}
+# 展示回退的固定通道优先级：只看通道顺序，不比较跨通道 rank 大小。
+REPRESENTATIVE_FALLBACK_ORDER = (CHANNEL_BM25, CHANNEL_VECTOR_ORIGINAL, CHANNEL_VECTOR_REWRITE)
+# 候选人侧向量 chunk 的四种原始 kind（阶段 4 分类型召回用它拆分召回列表）。
+VECTOR_KINDS = ("parent", "profile_point", "experience", "project")
+
+# 跨通道融合权重：阶段 1 保持等权，阶段 4 才用验收集校准。
+FUSION_WEIGHT_BM25 = 1.0
+FUSION_WEIGHT_VECTOR = 1.0
+# 改写向量在 vector family 内的权重（首轮 α=1.0）。
+FUSION_WEIGHT_REWRITE = 1.0
+
+
+def _row_kind(row: dict[str, Any]) -> str:
+    """行的原始切片类型：候选人侧看 ``kind``，岗位侧只有 ``chunk_type`` 区分父子。"""
+    kind = str(row.get("kind") or "").strip()
+    chunk_type = str(row.get("chunk_type") or "").strip()
+    if not kind or (kind == "parent" and chunk_type == "child"):
+        return chunk_type or "parent"
+    return kind
+
+
+def _row_text(row: dict[str, Any]) -> str:
+    return " ".join(str(row.get("keyword_text") or "").split())
+
+
+def _row_signals(row: dict[str, Any]) -> tuple[ChannelSignal, ...]:
+    return tuple(row.get("_signals") or ())
+
+
+def _rank_score(row: dict[str, Any]) -> float:
+    """该行在所有通道上的最大 reciprocal-rank contribution（无信号时为 0）。"""
+    return max((signal.reciprocal_rank for signal in _row_signals(row)), default=0.0)
+
+
+def _raw_score(row: dict[str, Any], channel: str) -> float | None:
+    """通道内原始分：BM25 取 ``_score``，向量取换算后的 higher-is-better similarity。"""
+    if channel == CHANNEL_BM25:
+        value = row.get("_score")
+        return float(value) if isinstance(value, (int, float)) else None
+    distance = row.get("_distance")
+    return (1.0 / (1.0 + distance)) if isinstance(distance, (int, float)) else None
+
+
+def _annotate(rows: list[dict[str, Any]], channel: str, rrf_k: int) -> list[dict[str, Any]]:
+    """给一个已按 rank 排好的候选人级列表挂上 ``ChannelSignal``（rank 从 1 开始）。
+
+    分类型向量召回时对每个 kind 列表各调一次，因此 rank 是「本 kind 列表内」的位置。
+    """
+    for rank, row in enumerate(rows, start=1):
+        signal = ChannelSignal(channel=channel, rank=rank, raw_score=_raw_score(row, channel),
+                               reciprocal_rank=1.0 / (rrf_k + rank))
+        row["_signals"] = (*_row_signals(row), signal)
+    return rows
+
+
+def _evidence_chunk(row: dict[str, Any], text: str) -> EvidenceChunk:
+    return EvidenceChunk(
+        kind=_row_kind(row),
+        text=text,
+        score=float(row.get("_score") or 0.0),
+        chunk_id=str(row.get("id") or "") or None,
+        sequence=row.get("sequence"),
+        evidence_path=tuple(row.get("evidence_path") or ()),
+        signals=_row_signals(row),
+    )
+
+
+def _with_parent_evidence(evidence: tuple[EvidenceChunk, ...], row: dict[str, Any],
+                          limit: int) -> tuple[EvidenceChunk, ...]:
+    """把稳定投影的真实 parent 补进证据包（缺它时）。
+
+    召回行可能只有 child（例如 FTS 命中 child 文本），此时证据包里没有 parent，
+    证据包的「概况」槽就会退化到 child 文本 —— 与「概况优先使用真实 parent」矛盾。
+    这里把投影用的 parent 行作为一条无通道信号的证据补在最前，保持 kind=parent。
+    """
+    if _row_kind(row) != "parent" or any(chunk.kind == "parent" for chunk in evidence):
+        return evidence
+    text = _row_text(row)
+    if not text:
+        return evidence
+    return (_evidence_chunk(row, text), *evidence)[:limit]
+
+
+def select_evidence(rows: list[dict[str, Any]], limit: int = EVIDENCE_CHUNK_LIMIT) -> tuple[EvidenceChunk, ...]:
+    """把同一实体的命中行去重成证据片段（按文本去重，不再要求 kind 各不相同）。
+
+    只做底层转换：文本非空、规范化内容不重复、按最大通道贡献排序（并列时保持输入顺序，
+    即召回排名顺序）。槽位（概况 / 主证据 / 补充证据）由上层适配器按查询概念选择，
+    底层不硬编码技术/业务分类。
+    """
+    seen_texts: set[str] = set()
+    candidates: list[tuple[int, float, dict[str, Any], str]] = []
+    for order, row in enumerate(rows):
+        text = _row_text(row)
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        candidates.append((order, _rank_score(row), row, text))
+    candidates.sort(key=lambda item: (-item[1], item[0]))
+    return tuple(_evidence_chunk(row, text) for _, _, row, text in candidates[:limit])
 
 
 SEARCH_DEADLINE: ContextVar[float | None] = ContextVar("search_execution_deadline", default=None)
@@ -27,8 +148,13 @@ SEARCH_DEADLINE: ContextVar[float | None] = ContextVar("search_execution_deadlin
 # 必须整体提升，旧索引不兼容时走显式重建。
 # schema 9 -> 10 / chunk 7 -> 8：新增多值方向三列（career_directions / career_specializations /
 # business_directions），旧索引缺列且检索路径不依赖它们，但筛选与匹配需要，故要求显式重建。
+# chunk 8 -> 9：父向量改为 v9 文本口径（去掉城市/学历/年限/公司枚举，加入业务方向与限长技能），
+# 子片段并入技术栈并把职业定位前缀压到 30 字符内；文档构造口径变了，必须重建才一致。
+# chunk 9 -> 10：词表扩容（岗位族/行业/缩写进共享概念表，文档侧 token 展开面变宽）+
+# 索引侧 location_terms 城市归一化（`广东省深圳市` → `深圳`）—— 两者都是索引列内容变更，
+# 旧行不含新别名、且非规范城市写法永远召不回，必须全量重投影才一致。
 INDEX_SCHEMA_VERSION = "10"
-INDEX_CHUNK_VERSION = "8"
+INDEX_CHUNK_VERSION = "10"
 # 可显式迁移的旧索引版本（只读回退 → 补列升级为可写）。
 LEGACY_SCHEMA_VERSION = "8"
 LEGACY_CHUNK_VERSION = "6"
@@ -444,7 +570,8 @@ class LanceDBSearchIndex:
         builder = table.search(fts_query, query_type="fts", fts_columns=fts_columns)
         if where:
             builder = builder.where(where)
-        return self._candidate_rows(builder, table.count_rows(), limit, filters)
+        rows = self._candidate_rows(builder, table.count_rows(), limit, filters)
+        return _annotate(rows, CHANNEL_BM25, self.rrf_k)
 
     def search_fts_boolean(self, query: str, concepts, operator: str,
                            filters: CandidateFilters, limit: int,
@@ -506,9 +633,9 @@ class LanceDBSearchIndex:
                 if _matches_concepts(row.get("keyword_index_text") or "", token_sets, operator):
                     matched.append(row)
             if len(matched) >= limit or len(rows) < retrieval_limit or retrieval_limit >= row_count:
-                return matched[:limit]
+                return _annotate(matched[:limit], CHANNEL_BM25, self.rrf_k)
             retrieval_limit = min(retrieval_limit * 2, row_count)
-        return matched[:limit]
+        return _annotate(matched[:limit], CHANNEL_BM25, self.rrf_k)
 
     def _and_candidate_rows(self, builder: Any, row_count: int, limit: int,
                             token_sets: tuple[set[str], ...]) -> list[dict[str, Any]]:
@@ -530,22 +657,55 @@ class LanceDBSearchIndex:
                     _matched_concept_indices(row.get("keyword_index_text") or "", token_sets))
             complete = [cid for cid, hits in progress.items() if len(hits) == len(token_sets)]
             if len(complete) >= limit or len(rows) < retrieval_limit or retrieval_limit >= row_count:
-                return [representatives[cid] for cid in complete[:limit]]
+                return _annotate([representatives[cid] for cid in complete[:limit]],
+                                 CHANNEL_BM25, self.rrf_k)
             retrieval_limit = min(retrieval_limit * 2, row_count)
         return []
 
-    def search_vector(self, query_vector: tuple[float, ...], filters: CandidateFilters, limit: int) -> list[dict[str, Any]]:
+    def search_vector(self, query_vector: tuple[float, ...], filters: CandidateFilters, limit: int,
+                      *, channel: str = CHANNEL_VECTOR_ORIGINAL,
+                      kind_quota: int | None = None) -> list[dict[str, Any]]:
+        """向量召回。
+
+        ``kind_quota`` 为 None 时保持基线：四种 kind 在同一个全局 top-K 里竞争，
+        rank 是全类型列表内位置。设为正整数时改为分类型召回，每个 kind 各取
+        ``kind_quota`` 行，rank 是**本 kind 列表内**位置（阶段 4 的消融档位）。
+        """
         self._require_readable()
         if not self._table_exists() or not query_vector:
             return []
         table = self.database.open_table(self.table_name)
         if table.count_rows() == 0:
             return []
+        if kind_quota:
+            rows: list[dict[str, Any]] = []
+            for kind in VECTOR_KINDS:
+                clause = self._kind_clause(kind)
+                if clause is None:
+                    continue  # 旧索引缺 kind 列：该类型不可分类型召回，跳过而非报错
+                kind_rows = self._vector_query(table, query_vector, filters, kind_quota, clause=clause)
+                rows.extend(_annotate(kind_rows, channel, self.rrf_k))
+            return rows
+        rows = self._vector_query(table, query_vector, filters, limit)
+        return _annotate(rows, channel, self.rrf_k)
+
+    def _vector_query(self, table: Any, query_vector: tuple[float, ...], filters: CandidateFilters,
+                      limit: int, *, clause: str | None = None) -> list[dict[str, Any]]:
         where = self._where(filters)
+        if clause:
+            where = " AND ".join(c for c in (where, clause) if c)
         builder = table.search(list(query_vector), vector_column_name="vector", query_type="vector")
         if where:
             builder = builder.where(where, prefilter=True)
         return self._candidate_rows(builder, table.count_rows(), limit, filters)
+
+    def _kind_clause(self, kind: str) -> str | None:
+        """候选人侧四种 kind 的过滤子句；旧索引缺 kind 列时返回 None（跳过该类型）。"""
+        if kind == "parent":
+            return "chunk_type = 'parent'"
+        if not self._has_column("kind"):
+            return None
+        return f"kind = {self._quote(kind)}"
 
     def _candidate_rows(self, builder: Any, row_count: int, limit: int,
                         filters: CandidateFilters) -> list[dict[str, Any]]:
@@ -556,7 +716,9 @@ class LanceDBSearchIndex:
             rows = builder.limit(retrieval_limit).to_list()
             self._check_deadline()
             unique: dict[str, dict[str, Any]] = {}
+            grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
             for row in rows:
+                grouped[row["candidate_id"]].append(row)
                 unique.setdefault(row["candidate_id"], row)
             if filters.exclude_skills:
                 from kerui_recruit.search.query import has_skill
@@ -568,6 +730,8 @@ class LanceDBSearchIndex:
                 for row in unique.values():
                     row["_verified_exclusions"] = filters.exclude_skills
             if len(unique) >= limit or len(rows) < retrieval_limit or retrieval_limit >= row_count:
+                for candidate_id, row in unique.items():
+                    row["_evidence"] = select_evidence(grouped[candidate_id])
                 return list(unique.values())[:limit]
             retrieval_limit = min(retrieval_limit * 2, row_count)
         return []
@@ -578,8 +742,10 @@ class LanceDBSearchIndex:
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Search deadline reached")
 
-    def fuse(self, fts_rows: list[dict[str, Any]], vector_rows: list[dict[str, Any]], limit: int) -> list[SearchHit]:
-        return self._rrf(fts_rows, vector_rows, limit)
+    def fuse(self, fts_rows: list[dict[str, Any]], vector_rows: list[dict[str, Any]], limit: int,
+             vector_rewrite_rows: list[dict[str, Any]] = ()) -> list[SearchHit]:
+        """候选人级加权 RRF：先转成通道内 reciprocal-rank contribution，再按通道族加权。"""
+        return self._hits_from_buckets(self._aggregate(fts_rows, vector_rows, vector_rewrite_rows), limit)
 
     def filter_search(self, filters: CandidateFilters, limit: int) -> list[SearchHit]:
         """Filter-only retrieval（无文本/语义查询），用于纯过滤条件查询。"""
@@ -595,28 +761,79 @@ class LanceDBSearchIndex:
             builder = builder.where(where)
         # Exclusions are verified by the service within the request deadline.
         rows = self._candidate_rows(builder, table.count_rows(), limit, filters)
-        return [self._hit_from_row(row, 0.0, ()) for row in rows]
+        return self._build_hits(rows, channel=None)
 
     def hits_from_rows(self, rows: list[dict[str, Any]], channel: str) -> list[SearchHit]:
-        """Convert raw LanceDB rows into ``SearchHit`` for single-channel recall.
+        """单通道召回的行 → ``SearchHit``（稳定 parent 投影 + 证据包）。
 
-        FTS rows carry ``_score`` (BM25, higher is better); vector rows carry
-        ``_distance`` (lower is better), converted to similarity for a
-        consistently higher-better score.
+        FTS 行带 ``_score``（BM25，越大越好）；向量行带 ``_distance``（越小越好），
+        换算成一致的 higher-is-better similarity。
         """
+        if rows:
+            internal = CHANNEL_VECTOR_ORIGINAL if channel == "vector" else CHANNEL_BM25
+            if not _row_signals(rows[0]):
+                _annotate(rows, internal, self.rrf_k)
+        return self._build_hits(rows, channel=channel)
+
+    def _build_hits(self, rows: list[dict[str, Any]], *, channel: str | None) -> list[SearchHit]:
+        """稳定展示投影：代表字段取自真实 parent，缺 parent 时才按固定通道优先级回退。"""
+        parents = self._parent_rows({row["revision_id"] for row in rows
+                                     if _row_kind(row) != "parent"})
         hits: list[SearchHit] = []
         for row in rows:
-            if channel == "vector":
-                distance = row.get("_distance")
-                score = (1.0 / (1.0 + distance)) if isinstance(distance, (int, float)) else 0.0
+            parent = parents.get(row["revision_id"])
+            if parent is not None:
+                projection, representative_kind = parent, "parent"
             else:
-                raw = row.get("_score")
-                score = raw if isinstance(raw, (int, float)) else 0.0
-            hits.append(self._hit_from_row(row, score, (channel,)))
+                projection, representative_kind = row, _row_kind(row)
+            internal = CHANNEL_VECTOR_ORIGINAL if channel == "vector" else (
+                channel or CHANNEL_BM25)
+            signals = _row_signals(row)
+            score = max((signal.raw_score or 0.0 for signal in signals
+                         if signal.channel == internal), default=0.0)
+            if channel is None:
+                score = 0.0
+            channels = () if channel is None else (PUBLIC_CHANNELS.get(internal, internal),)
+            hits.append(self._hit_from_row(
+                projection, score, channels,
+                representative_kind=representative_kind,
+                signals=signals,
+                evidence=_with_parent_evidence(tuple(row.get("_evidence") or ()), projection,
+                                              EVIDENCE_CANDIDATE_LIMIT),
+            ))
         return hits
 
+    def _parent_rows(self, revision_ids: set[str]) -> dict[str, dict[str, Any]]:
+        """按 revision 批量回读真实 parent 行（分批，避免超长 IN 子句）。"""
+        if not revision_ids or not self._table_exists():
+            return {}
+        table = self.database.open_table(self.table_name)
+        result: dict[str, dict[str, Any]] = {}
+        pending = sorted(revision_ids)
+        for start in range(0, len(pending), 256):
+            self._check_deadline()
+            batch = pending[start:start + 256]
+            quoted = ", ".join(self._quote(revision_id) for revision_id in batch)
+            try:
+                rows = table.search(None).where(
+                    f"chunk_type = 'parent' AND revision_id IN ({quoted})").limit(None).to_list()
+            except Exception:
+                continue
+            for row in rows:
+                result.setdefault(row["revision_id"], row)
+        self._check_deadline()
+        return result
+
     @staticmethod
-    def _hit_from_row(row: dict[str, Any], score: float, channels: tuple[str, ...]) -> SearchHit:
+    def _hit_from_row(row: dict[str, Any], score: float, channels: tuple[str, ...],
+                      *, representative_kind: str = "parent",
+                      signals: tuple[ChannelSignal, ...] = (),
+                      evidence: tuple[EvidenceChunk, ...] = (),
+                      fusion_score: float | None = None) -> SearchHit:
+        ranks = {signal.channel: signal for signal in signals}
+        bm25 = ranks.get(CHANNEL_BM25)
+        original = ranks.get(CHANNEL_VECTOR_ORIGINAL)
+        rewrite = ranks.get(CHANNEL_VECTOR_REWRITE)
         return SearchHit(
             chunk_id=row["id"],
             candidate_id=row["candidate_id"],
@@ -630,52 +847,101 @@ class LanceDBSearchIndex:
             qs_rank=row.get("qs_rank"),
             verified_exclusions=tuple(row.get("_verified_exclusions", ())),
             vector_text=row.get("vector_text") or "",
+            evidence=evidence,
+            representative_kind=representative_kind,
+            bm25_rank=bm25.rank if bm25 else None,
+            bm25_score=bm25.raw_score if bm25 else None,
+            vector_original_rank=original.rank if original else None,
+            vector_original_score=original.raw_score if original else None,
+            vector_rewrite_rank=rewrite.rank if rewrite else None,
+            vector_rewrite_score=rewrite.raw_score if rewrite else None,
+            fusion_score=fusion_score,
         )
 
-    def _rrf(
-        self,
-        bm25_rows: list[dict[str, Any]],
-        vector_rows: list[dict[str, Any]],
-        limit: int,
-    ) -> list[SearchHit]:
-        # 候选人级 RRF：每个通道先按候选人取最佳 rank，再融合；通道证据取并集，
-        # 避免一个候选人的多个子 chunk 挤占多个名次，也避免父子 chunk 的通道被拆散。
-        scores: dict[str, float] = defaultdict(float)
-        channels: dict[str, set[str]] = defaultdict(set)
-        rows: dict[str, dict[str, Any]] = {}
-        for channel, ranked_rows in (("bm25", bm25_rows), ("vector", vector_rows)):
-            best_rank: dict[str, int] = {}
-            for rank, row in enumerate(ranked_rows, start=1):
+    def _aggregate(self, *row_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """把多路召回列表聚合成候选人级记录：各通道最佳信号 + 加权融合分。
+
+        融合只使用通道内 rank 换算出的 reciprocal-rank contribution：
+        同一查询变体下四种 kind 取最大值（不按片段数量累加）；原查询与改写查询
+        同属 vector family，取 ``max(original, α × rewrite)``，避免重复命中双倍加权。
+        """
+        buckets: dict[str, dict[str, Any]] = {}
+        for rows in row_lists:
+            for row in rows:
                 candidate_id = row["candidate_id"]
-                if candidate_id not in best_rank:
-                    best_rank[candidate_id] = rank
-                    rows.setdefault(candidate_id, row)
-                channels[candidate_id].add(channel)
-            for candidate_id, rank in best_rank.items():
-                scores[candidate_id] += 1.0 / (self.rrf_k + rank)
-        ordered_ids = sorted(scores, key=lambda item: (-scores[item], item))
+                bucket = buckets.get(candidate_id)
+                if bucket is None:
+                    bucket = buckets[candidate_id] = {
+                        "candidate_id": candidate_id,
+                        "revision_id": row["revision_id"],
+                        "rows": [],
+                        "best": {},
+                    }
+                bucket["rows"].append(row)
+                for signal in _row_signals(row):
+                    current = bucket["best"].get(signal.channel)
+                    if current is None or signal.reciprocal_rank > current.reciprocal_rank:
+                        bucket["best"][signal.channel] = signal
+        aggregated: list[dict[str, Any]] = []
+        for bucket in buckets.values():
+            best = bucket["best"]
+            bm25 = best.get(CHANNEL_BM25)
+            original = best.get(CHANNEL_VECTOR_ORIGINAL)
+            rewrite = best.get(CHANNEL_VECTOR_REWRITE)
+            vector_family = max(original.reciprocal_rank if original else 0.0,
+                                FUSION_WEIGHT_REWRITE * (rewrite.reciprocal_rank if rewrite else 0.0))
+            bucket["fusion"] = (FUSION_WEIGHT_BM25 * (bm25.reciprocal_rank if bm25 else 0.0)
+                                + FUSION_WEIGHT_VECTOR * vector_family)
+            bucket["channels"] = tuple(sorted({PUBLIC_CHANNELS.get(name, name) for name in best}))
+            aggregated.append(bucket)
+        aggregated.sort(key=lambda bucket: (-bucket["fusion"], bucket["candidate_id"]))
+        return aggregated
+
+    def _hits_from_buckets(self, buckets: list[dict[str, Any]], limit: int) -> list[SearchHit]:
+        selected = buckets[:limit]
+        parents = self._parent_rows({bucket["revision_id"] for bucket in selected
+                                     if not any(_row_kind(row) == "parent" for row in bucket["rows"])})
         hits: list[SearchHit] = []
-        for candidate_id in ordered_ids:
-            row = rows[candidate_id]
-            hits.append(
-                SearchHit(
-                    chunk_id=row["id"],
-                    candidate_id=candidate_id,
-                    revision_id=row["revision_id"],
-                    content=row.get("keyword_text") or "",
-                    score=scores[candidate_id],
-                    matched_channels=tuple(sorted(channels[candidate_id])),
-                    total_years=row.get("total_years"),
-                    highest_degree=row.get("highest_degree"),
-                    location=row.get("location"),
-                    qs_rank=row.get("qs_rank"),
-                    verified_exclusions=tuple(row.get("_verified_exclusions", ())),
-                    vector_text=row.get("vector_text") or "",
-                )
-            )
-            if len(hits) >= limit:
-                break
+        for bucket in selected:
+            row = next((item for item in bucket["rows"] if _row_kind(item) == "parent"), None)
+            representative_kind = "parent"
+            if row is None:
+                # parent 未出现在召回行里：按 revision 批量回读，回退才是最后手段。
+                row = parents.get(bucket["revision_id"])
+                if row is None:
+                    row = self._fallback_representative(bucket["rows"])
+                    if row is None:
+                        continue
+                    representative_kind = _row_kind(row)
+            hits.append(self._hit_from_row(
+                row, bucket["fusion"], bucket["channels"],
+                representative_kind=representative_kind,
+                signals=tuple(bucket["best"].values()),
+                evidence=_with_parent_evidence(
+                    select_evidence(bucket["rows"], EVIDENCE_CANDIDATE_LIMIT), row,
+                    EVIDENCE_CANDIDATE_LIMIT),
+                fusion_score=bucket["fusion"],
+            ))
         return hits
+
+    @staticmethod
+    def _fallback_representative(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """parent 确实缺失时的展示回退：固定通道优先级，再取该通道内最小 rank。
+
+        不比较跨通道 rank 数值 —— 两种 rank 只在各自列表内有意义。
+        """
+        for channel in REPRESENTATIVE_FALLBACK_ORDER:
+            candidates = [
+                signal.rank for row in rows for signal in _row_signals(row)
+                if signal.channel == channel
+            ]
+            if candidates:
+                target = min(candidates)
+                for row in rows:
+                    if any(signal.channel == channel and signal.rank == target
+                           for signal in _row_signals(row)):
+                        return row
+        return rows[0] if rows else None
 
     def _record(self, chunk: SearchChunk) -> dict[str, Any]:
         if len(chunk.vector) != self.vector_dimension:
@@ -828,6 +1094,14 @@ class LanceDBSearchIndex:
             clauses.append(self._like_contains("name_text", filters.name))
         if filters.company:
             clauses.append(self._like_contains("company_text", filters.company))
+        # 多值公司：JD 硬条件「只要字节、阿里背景」的 OR 语义（company_text 覆盖全部工作经历）。
+        if filters.companies:
+            clauses.append("(" + " OR ".join(
+                self._like_contains("company_text", company) for company in filters.companies) + ")")
+        # 证据型硬条件：在正文列做子串证据匹配（LIKE 优先，见方案 §2.2）。
+        if filters.evidence_terms:
+            clauses.append("(" + " OR ".join(
+                self._like_contains("body_index_text", term) for term in filters.evidence_terms) + ")")
         if filters.title:
             clauses.append(self._like_contains("title_text", filters.title))
         if filters.school:

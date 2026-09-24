@@ -10,7 +10,11 @@ from kerui_recruit.db.base import Base
 from kerui_recruit.db import models as _models
 from kerui_recruit.db.upgrades import DEFAULT_UPGRADES, Upgrade
 
-SCHEMA_VERSION = 17
+# 当前目标 schema 版本。**加一条 Upgrade 时必须同步改这里**，否则 `migrate` 的
+# `version < target_version` 循环根本不会执行，新列不会加上，存量库启动即报
+# 「no such column」。`tests/db/test_migrate.py::test_schema_version_matches_last_upgrade`
+# 就是守这条的。
+SCHEMA_VERSION = 22
 
 
 def migrate(

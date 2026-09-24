@@ -39,6 +39,21 @@ def validate_connection(
         if profile is not None and not can_serve_role(profile, role):
             raise ValueError(f"模型 {model_id} 不支持角色 {role.value}")
 
+    # 思考强度只能取该角色所用模型档案声明过的档位。**目录外模型一律拒绝**：
+    # 自定义连接没有档位声明，界面也就没有可选项；这里放行的话，
+    # `apply_reasoning` 会因为档位不在 `supported_reasoning_efforts` 里而静默不发字段，
+    # 使用者以为设了强度、实际请求体里什么都没有。
+    for role, effort in connection.reasoning_efforts.items():
+        model_id = connection.models.get(role)
+        if model_id is None:
+            raise ValueError(f"角色 {role.value} 未分配模型，不能指定思考强度")
+        profile = preset.models.get(model_id)
+        if profile is None:
+            raise ValueError(f"模型 {model_id} 未声明思考强度档位，不能指定思考强度 {effort}")
+        if effort not in profile.supported_reasoning_efforts:
+            supported = "、".join(sorted(profile.supported_reasoning_efforts)) or "无"
+            raise ValueError(f"模型 {model_id} 不支持思考强度 {effort}（可用：{supported}）")
+
     if connection.provider_id == "custom_openai":
         base = connection.base_url_override or ""
         if not base.startswith("https://") and not (

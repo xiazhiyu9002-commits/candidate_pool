@@ -97,6 +97,8 @@ kbd { padding: 4px 7px; border: 1px solid #e5e7eb; background: #f8fafc; border-r
 .empty-state { height: 280px; display: grid; place-content: center; text-align: center; color: #6b7280; }
 .empty-state strong { color: #1f2933; }
 .empty-state p { margin: 8px 0; font-size: 13px; }
+/* 空结果自诊断：提示可能是推断条件误判，并给出一键去掉重搜。 */
+.empty-state__hint { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
 table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 th { color: #9ca3af; font-size: 11px; text-transform: uppercase; text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; }
 td { padding: 14px 10px; border-bottom: 1px solid #f0f0f0; color: #4b5563; font-size: 13px; }
@@ -211,14 +213,17 @@ td small { color: #6b7280; margin-top: 5px; }
 .health-card p { margin: 8px 0 0; color: #6b7280; font-size: 12px; }
 .dashboard-hint { margin: 10px 2px 0; color: #9ca3af; font-size: 12px; }
 .followup-card { min-height: 0; margin-bottom: 16px; }
-.followup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 14px; }
+.followup-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 14px; }
 .followup-col h3 { margin: 0 0 8px; font-size: 14px; color: #1f2933; }
 .followup-count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 10px; background: #eef2ff; color: #4338ca; font-size: 12px; text-align: center; }
 .followup-list { list-style: none; margin: 0; padding: 0; }
 .followup-list li { padding: 7px 0; border-bottom: 1px dashed #eef0f3; font-size: 13px; color: #334155; }
 .followup-list li:last-child { border-bottom: none; }
+.followup-item { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .followup-time { float: right; color: #9ca3af; font-size: 12px; }
 .followup-empty { margin: 8px 0 0; color: #9ca3af; font-size: 13px; }
+/* 待办勾选后的观感：置灰 + 删除线。勾选表示「今天处理过」，不代表任务完成。 */
+.is-done { color: #9ca3af; text-decoration: line-through; }
 .dashboard-filters { flex-wrap: wrap; gap: 14px; }
 .dashboard-filters .case-filter-field select { min-width: 0; width: 160px; }
 .dashboard-filters .case-filter-field input[type="date"] { min-width: 0; width: 140px; }
@@ -301,11 +306,13 @@ td small { color: #6b7280; margin-top: 5px; }
 .org-node--company { border-radius: 26px; background: #2563eb; color: #fff; border-color: #2563eb; }
 .org-node--company .org-node-sub { color: #dbeafe; }
 .org-node-toggle { border: 0; background: transparent; color: #9ca3af; cursor: pointer; font-size: 10px; padding: 0; flex: 0 0 auto; }
-.org-node-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.org-node-sub { display: block; color: #9ca3af; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 名称 + 副标题共用一个纵向容器。**不要**写成 `.org-node > span`：那会同时命中名称与副标题
+   两个 span，各给一次 `flex:1`（flex-basis:0）→ 各拿一半宽度、双双被 ellipsis 截断。 */
+.org-node-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; flex: 1 1 auto; }
+.org-node-name { font-weight: 700; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.org-node-sub { display: block; max-width: 100%; color: #9ca3af; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .org-node-badge { position: absolute; right: -6px; top: -6px; background: #d5f25e; color: #2563eb; font-size: 10px; font-weight: 700; border-radius: 9px; padding: 1px 6px; }
 .org-node-input { width: 100%; border: 1px solid #2563eb; border-radius: 6px; padding: 4px 6px; font: inherit; outline: none; }
-.org-node > span { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 
 /* 详情面板 */
 .org-detail { display: flex; flex-direction: column; gap: 14px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; min-height: 220px; }
@@ -899,6 +906,68 @@ td small { color: #6b7280; margin-top: 5px; }
 .rewrite-toggle { display: inline-flex; align-items: center; gap: 6px; height: 32px; font-size: 13px; color: var(--text); white-space: nowrap; cursor: pointer; }
 .rewrite-toggle .muted { color: var(--text-muted); font-size: 12px; }
 
+/* 开关 + ⓘ 说明的组合：ⓘ 必须在 label 之外（button 是 labelable，嵌在 label 里是非法 HTML），
+   所以用一层 inline-flex 把两者贴在一起。 */
+.rewrite-toggle-group { display: inline-flex; align-items: center; }
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: help;
+  border-radius: 50%;
+}
+.info-tip:hover, .info-tip:focus-visible { color: var(--primary); outline: none; }
+.info-tip:focus-visible { box-shadow: 0 0 0 3px var(--primary-soft); }
+/* 说明浮层沿用长文本浮层的视觉语言，只把可选中光标改回默认。 */
+.info-tip__panel { cursor: default; }
+
+/* AI 画像单元格的上下分栏：上=AI 画像（进画像与向量），下=沟通记录（只存不检索）。
+   沟通记录用更弱的样式区分「备注」与「模型产物」，避免被误读成画像的一部分。 */
+.cell-stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cell-stack__row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cell-stack__row--note { padding-top: 3px; border-top: 1px dashed var(--border); }
+.note-cell { display: inline-block; max-width: 100%; color: var(--text-muted); font-size: 12px; cursor: text; }
+.note-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  resize: vertical;
+}
+
+/* 生效硬条件：合并后（面板手填 + AI 解析 + 规则解析）的最终集合，逐条可改可删。 */
+.search-conditions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px 0; font-size: 13px; }
+.condition-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-size: 12px; }
+.condition-tag.is-inferred { border-style: dashed; }
+/* 硬筛筛空后退化为软排：条件仍在，但只参与排序、不再过滤。 */
+.condition-tag.is-relaxed { border-style: dashed; border-color: var(--warning, var(--border-strong)); }
+.condition-tag .muted { color: var(--text-muted); font-size: 11px; }
+.condition-tag__action { border: 0; background: none; padding: 0 2px; color: var(--text-muted); font-size: 12px; line-height: 1; cursor: pointer; }
+.condition-tag__action:hover { color: var(--primary); }
+.condition-tag.is-removed { border-style: dashed; color: var(--text-muted); text-decoration: line-through; cursor: pointer; }
+.condition-tag.is-removed:hover { color: var(--primary); }
+
+/* AI 解析回显：解析来源 / 检索词条 / 语义查询 / 未识别片段。 */
+.search-parse-echo { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 6px 16px 0; font-size: 12px; color: var(--text); }
+.search-parse-echo__item { display: inline-flex; gap: 6px; }
+.search-parse-echo__item .muted { color: var(--text-muted); font-style: normal; }
+
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 .card__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .card__title { font-weight: 700; font-size: 14px; }
@@ -1014,6 +1083,11 @@ th.col-review, td.col-review { max-width: 240px; overflow: hidden; text-overflow
 .row-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--radius-md); }
 .row-item strong { font-size: 13px; color: var(--text); }
 .row-item small { display: block; color: var(--text-muted); font-size: 12px; }
+/* 能力检测矩阵：把「到底哪一项探测没过」摊开，而不是只给一个「可用」。 */
+.capability-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.capability { display: inline-flex; align-items: center; gap: 2px; padding: 1px 7px; border-radius: 999px; font-size: 11px; line-height: 1.7; }
+.capability.is-ok { background: var(--success-soft); color: var(--success); }
+.capability.is-bad { background: var(--danger-soft); color: var(--danger); }
 .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sub-label { margin-top: 14px; font-size: 13px; font-weight: 700; color: var(--text-muted); }
 .form-grid input, .form-grid select, .form-grid textarea {

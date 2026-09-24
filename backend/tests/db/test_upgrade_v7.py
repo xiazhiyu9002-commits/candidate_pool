@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import inspect
 
-from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.migrate import SCHEMA_VERSION, migrate
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.db.upgrades import Upgrade
 
@@ -74,19 +74,19 @@ def test_v6_snapshot_is_before_any_schema_mutation_and_history_survives(tmp_path
         assert names <= {column["name"] for column in inspector.get_columns(table)}
     assert "index_sync" in inspector.get_table_names()
     with engine.connect() as db:
-        assert db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all() == [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        assert db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all() == list(range(6, SCHEMA_VERSION + 1))
         assert db.exec_driver_sql("SELECT * FROM stage_event").all() == old_events
         assert db.exec_driver_sql("SELECT status FROM candidate").scalar_one() == "ON_HOLD"
         assert db.exec_driver_sql("SELECT paused_by_workflow FROM reminder").scalar_one() == 0
         assert db.exec_driver_sql("SELECT time_basis FROM reminder").scalar_one() == "LEGACY_SHANGHAI"
-    snapshots = list(tmp_path.glob("recruit.pre-v6-to-v17-*.sqlite3"))
+    snapshots = list(tmp_path.glob(f"recruit.pre-v6-to-v{SCHEMA_VERSION}-*.sqlite3"))
     assert len(snapshots) == 1
     assert _schema(snapshots[0]) == old_schema
     with sqlite3.connect(snapshots[0]) as db:
         assert db.execute("SELECT * FROM stage_event").fetchall() == old_events
         assert db.execute("SELECT version FROM schema_version").fetchall() == [(6,)]
     migrate(engine)
-    assert len(list(tmp_path.glob("recruit.pre-v6-to-v17-*.sqlite3"))) == 1
+    assert len(list(tmp_path.glob(f"recruit.pre-v6-to-v{SCHEMA_VERSION}-*.sqlite3"))) == 1
 
 
 def test_future_schema_rejection_does_not_create_new_tables(tmp_path: Path) -> None:

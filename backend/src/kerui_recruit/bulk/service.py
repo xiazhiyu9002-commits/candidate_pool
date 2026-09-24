@@ -83,13 +83,14 @@ def bulk_delete_jds(services, jd_ids: list[str]) -> BulkResult:
     results: list[BulkItemResult] = []
     for jd_id in dict.fromkeys(jd_ids):
         try:
-            # 删除前统计会级联删除的流程数量，供 UI 明确告知影响范围。
+            # 删除前统计关联流程数量：这些流程**会被保留**（岗位信息转为快照），
+            # 供 UI 明确告知影响范围。
             with services.session_factory() as session:
                 case_count = _count_cases(session, jd_id)
             deleted = deletion.delete(jd_id)
             results.append(BulkItemResult(
                 jd_id, ok=deleted, error=None if deleted else "岗位不存在",
-                extra={"cascade_cases": case_count} if deleted else {},
+                extra={"retained_cases": case_count} if deleted else {},
             ))
         except Exception as exc:  # noqa: BLE001
             results.append(BulkItemResult(jd_id, ok=False, error=type(exc).__name__))

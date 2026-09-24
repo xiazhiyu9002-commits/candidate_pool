@@ -1,11 +1,16 @@
 import { useState } from "react";
 
+import type { ProfileGenerationProgress } from "../api/client";
+
 interface CandidateProfileEditorProps {
   candidateId: string;
   summary: string | null;
   source: string | null;
   onSave: (summary: string) => Promise<void>;
-  onRegenerate: (instruction: string) => Promise<string | null>;
+  onRegenerate: (
+    instruction: string,
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ) => Promise<string | null>;
   onClose: () => void;
 }
 
@@ -32,6 +37,8 @@ export function CandidateProfileEditor({
   const [instruction, setInstruction] = useState("");
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  /** 生成阶段的服务端文案。**不是装饰**：最坏要等 150 秒，只有转圈看不出「还会不会再来一次模型调用」。 */
+  const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function save() {
@@ -50,15 +57,17 @@ export function CandidateProfileEditor({
   async function regenerate() {
     if (saving || regenerating) return;
     setRegenerating(true);
+    setStage(null);
     setError(null);
     try {
-      const summary = await onRegenerate(instruction);
+      const summary = await onRegenerate(instruction, (progress) => setStage(progress.message));
       if (summary != null) setDraft(summary);
       setInstruction("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "画像重新生成失败");
     } finally {
       setRegenerating(false);
+      setStage(null);
     }
   }
 
@@ -87,6 +96,7 @@ export function CandidateProfileEditor({
           placeholder="例如：突出 AI/LLM 落地经验，适合金融科技方向…"
         />
         {error && <p role="alert" className="profile-editor__error">{error}</p>}
+        {regenerating && stage && <p role="status" className="profile-editor__hint">{stage}</p>}
         <div className="profile-editor__actions">
           <button type="button" className="btn btn-ghost btn-xs" disabled={saving || regenerating} onClick={() => void regenerate()}>
             {regenerating ? "处理中…" : "重新生成"}

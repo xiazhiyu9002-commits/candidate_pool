@@ -57,8 +57,11 @@ def restore_snapshot(filename: str, request: Request) -> RestoreResponse:
     try:
         safety = services.backup_service.restore_snapshot(filename)
     except ValueError as error:
-        from kerui_recruit.api.errors import ApiError
         raise ApiError(422, "E_BACKUP_INVALID", str(error)) from error
+    except FileNotFoundError as error:
+        # 快照不存在是调用方给错了文件名，不是内部错误。原来会落到全局 Exception 处理器，
+        # 变成 `500 E_INTERNAL` 并把英文内部消息透给前端（实测）。
+        raise ApiError(404, "E_BACKUP_NOT_FOUND", "备份快照不存在") from error
     return RestoreResponse(restored_from=filename, safety_backup=str(safety))
 
 

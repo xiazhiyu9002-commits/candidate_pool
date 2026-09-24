@@ -86,7 +86,7 @@ describe("ApiClient", () => {
 
     expect(received?.url).toBe("http://127.0.0.1:43127/api/search/candidates");
     expect(received?.headers.get("X-Kerui-Session")).toBe("launch-token");
-    expect(await received?.json()).toEqual({ query: "Python 金融", mode: "hybrid", operator: "smart", rewrite_enabled: false, search_body: false, limit: 100, offset: 0 });
+    expect(await received?.json()).toEqual({ query: "Python 金融", mode: "hybrid", operator: "smart", rewrite_enabled: false, search_body: false, parse_enabled: false, limit: 50, offset: 0 });
   });
 
   test("serializes keyword operator and disabled rewrite as snake_case", async () => {
@@ -99,7 +99,7 @@ describe("ApiClient", () => {
 
     await client.searchCandidates("Java 后端", undefined, { mode: "keyword", operator: "and", rewriteEnabled: false });
 
-    expect(await received?.json()).toEqual({ query: "Java 后端", mode: "keyword", operator: "and", rewrite_enabled: false, search_body: false, limit: 2000, offset: 0 });
+    expect(await received?.json()).toEqual({ query: "Java 后端", mode: "keyword", operator: "and", rewrite_enabled: false, search_body: false, parse_enabled: false, limit: 2000, offset: 0 });
   });
 
   test("serializes hybrid rewrite enabled", async () => {
@@ -112,7 +112,45 @@ describe("ApiClient", () => {
 
     await client.searchCandidates("交易系统后端", undefined, { mode: "hybrid", operator: "smart", rewriteEnabled: true });
 
-    expect(await received?.json()).toEqual({ query: "交易系统后端", mode: "hybrid", operator: "smart", rewrite_enabled: true, search_body: false, limit: 100, offset: 0 });
+    expect(await received?.json()).toEqual({ query: "交易系统后端", mode: "hybrid", operator: "smart", rewrite_enabled: true, search_body: false, parse_enabled: false, limit: 50, offset: 0 });
+  });
+
+  test("forwards the AI parse toggle in every mode", async () => {
+    const requests: Request[] = [];
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      requests.push(new Request(input, init));
+      return new Response(JSON.stringify({ items: [], degraded_reasons: [] }), { status: 200 });
+    });
+
+    await client.searchCandidates("上海 5 年后端", undefined, {
+      mode: "hybrid", operator: "smart", rewriteEnabled: false, parseEnabled: true,
+    });
+    await client.searchCandidates("上海 5 年后端", undefined, {
+      mode: "keyword", operator: "and", rewriteEnabled: false, parseEnabled: true,
+    });
+
+    // 关键词模式不消费语义查询，但 AI 解析（filters + keywords）仍应照常生效。
+    expect((await requests[0].json()).parse_enabled).toBe(true);
+    expect((await requests[1].json()).parse_enabled).toBe(true);
+  });
+
+  test("forwards the body toggle in hybrid mode and drops it in vector mode", async () => {
+    const requests: Request[] = [];
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      requests.push(new Request(input, init));
+      return new Response(JSON.stringify({ items: [], degraded_reasons: [] }), { status: 200 });
+    });
+
+    await client.searchCandidates("Kafka 支付", undefined, {
+      mode: "hybrid", operator: "smart", rewriteEnabled: false, searchBody: true,
+    });
+    await client.searchCandidates("Kafka 支付", undefined, {
+      mode: "vector", operator: "smart", rewriteEnabled: false, searchBody: true,
+    });
+
+    expect((await requests[0].json()).search_body).toBe(true);
+    // 向量模式没有 FTS 通道，开关无意义：即使前端传 true 也不发送。
+    expect((await requests[1].json()).search_body).toBe(false);
   });
 
   test("forwards explicit search filters without overriding natural-language defaults", async () => {
@@ -129,7 +167,7 @@ describe("ApiClient", () => {
     });
     await client.listCandidatesPage(2, 50);
     expect(await requests[0].json()).toEqual({
-      query: "Python 上海", mode: "hybrid", operator: "smart", rewrite_enabled: false, search_body: false, limit: 100, offset: 0,
+      query: "Python 上海", mode: "hybrid", operator: "smart", rewrite_enabled: false, search_body: false, parse_enabled: false, limit: 50, offset: 0,
       filters: { min_years: 5, highest_degree: "BACHELOR", locations: ["上海", "苏州"],
         preferred_locations: ["北京"], exclude_skills: ["外包"] },
     });
@@ -423,7 +461,7 @@ describe("ApiClient", () => {
     expect(url.searchParams.get("status")).toBe("OPEN");
   });
 
-  test("sends at most two ai connections and never puts keys in URLs", async () => {
+  test("sends ai connections in order and never puts keys in URLs", async () => {
     const requests: Request[] = [];
     const fetcher: typeof fetch = async (input, init) => {
       requests.push(new Request(input, init));
@@ -433,6 +471,7 @@ describe("ApiClient", () => {
     await client.updateAiConfig({ connections: [
       { provider_id: "deepseek", display_name: "DeepSeek", api_key: "ds-secret", models: {}, enabled: true },
       { provider_id: "qwen", display_name: "通义千问", api_key: "qw-secret", models: {}, enabled: true },
+      { provider_id: "zhipu", display_name: "智谱 GLM", api_key: "zp-secret", models: {}, enabled: true },
     ] });
     expect(new URL(requests[0].url).pathname).toBe("/api/ai/config");
     expect(requests[0].url).not.toContain("secret");
@@ -449,5 +488,31 @@ describe("ApiClient", () => {
     await client.probeAiConnection({ provider_id: "deepseek", api_key: "probe-secret" });
     expect(requests[0].method).toBe("POST");
     expect(requests[0].url).not.toContain("probe-secret");
+  });
+
+  test("posts daily todo checks and candidate reminders as JSON", async () => {
+    // 漏掉 Content-Type 时浏览器按 text/plain 发送，FastAPI 解析不出 body 会回 422，
+    // 前端只看到 detail 数组 → 「建提醒」弹窗报 [object Object]。这里锁定请求头。
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify(received.length === 1
+        ? { date: "2026-09-23", item_key: "followup:case-1", done: true }
+        : { id: "reminder-1", candidate_id: "candidate-1", name: "张三", content: "下周一电话回访", done: false }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.checkDailyTodo({ item_key: "followup:case-1", done: true });
+    await client.createCandidateReminder({ candidate_id: "candidate-1", content: "下周一电话回访" });
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/daily-followup/check");
+    expect(received[0].headers.get("Content-Type")).toBe("application/json");
+    expect(await received[0].json()).toEqual({ item_key: "followup:case-1", done: true });
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/candidate-reminders");
+    expect(received[1].headers.get("Content-Type")).toBe("application/json");
+    expect(await received[1].json()).toEqual({ candidate_id: "candidate-1", content: "下周一电话回访" });
   });
 });

@@ -1,4 +1,4 @@
-import type { AiCatalog, AiConfig, AiStatus, ModelRole } from "./types";
+import type { AiCapabilityKey, AiCatalog, AiConfig, AiStatus, ModelRole } from "./types";
 import { Button } from "../components/ui";
 
 export const PROVIDER_LABELS: Record<string, string> = {
@@ -6,7 +6,9 @@ export const PROVIDER_LABELS: Record<string, string> = {
   kimi_open: "Kimi 开放平台",
   kimi_code: "Kimi Code 订阅",
   qwen: "通义千问",
+  qwen_code: "阿里百炼 Coding Plan",
   zhipu: "智谱 GLM",
+  zhipu_code: "智谱 GLM Coding Plan",
   siliconflow: "硅基流动",
   custom_openai: "自定义 OpenAI 兼容",
 };
@@ -21,7 +23,51 @@ const ROLES: { key: ModelRole; label: string }[] = [
   { key: "vision", label: "视觉" },
 ];
 
+// 能力矩阵：把「到底哪一项探测没过」摊开显示。只显示一个「可用」无法解释
+// 「配置里显示可用，但导入简历一直不解析」这类问题。
+export const CAPABILITIES: { key: AiCapabilityKey; label: string }[] = [
+  { key: "auth", label: "鉴权" },
+  { key: "text", label: "文本" },
+  { key: "json", label: "JSON" },
+  { key: "reasoning", label: "思考" },
+  { key: "vision", label: "视觉" },
+];
+
 const FALLBACK_TTL_SECONDS = 60;
+
+/**
+ * 单个连接的能力检测结果。
+ *
+ * 只展示**本次探测真的跑过**的能力项：没配视觉模型时 `vision` 不会出现在矩阵里，
+ * 渲染成红色 ✗ 会被误读成「视觉不能用」，而事实是「没测」。
+ */
+function CapabilityRow({
+  provider,
+  capabilities,
+}: {
+  provider: string;
+  capabilities: Partial<Record<AiCapabilityKey, boolean>>;
+}) {
+  const entries = CAPABILITIES.filter(({ key }) => capabilities[key] !== undefined);
+  if (entries.length === 0) return null;
+  return (
+    <div className="capability-row" role="list" aria-label={`${provider} 能力检测结果`}>
+      {entries.map(({ key, label }) => {
+        const passed = capabilities[key] === true;
+        return (
+          <span
+            key={key}
+            role="listitem"
+            className={`capability ${passed ? "is-ok" : "is-bad"}`}
+            title={passed ? `${label}：检测通过` : `${label}：检测未通过`}
+          >
+            {label} {passed ? "✓" : "✗"}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 function statusCopy(config: AiConfig | null, status: AiStatus | null): { headline: string; detail?: string } {
   const fallback = status?.last_fallback;
@@ -97,10 +143,8 @@ export function AiServicesPanel(props: AiServicesPanelProps) {
   const connections = config?.connections ?? [];
   const enabled = connections.filter((c) => c.enabled);
   const copy = statusCopy(config, status);
-  // “是否有空位”按连接总数（含停用）判断，与后端 max_length=2 对齐；
-  // 否则停用一条后前端会误显示“添加”按钮，新增第三条会被后端 422 拒绝。
+  // 连接数量不设上限：列表顺序即主备顺序，最上面的两个参与路由，其余作为候补。
   const hasPrimary = connections.length >= 1;
-  const hasSecondary = connections.length >= 2;
   const roles = roleStatus(config, status);
 
   return (
@@ -112,8 +156,10 @@ export function AiServicesPanel(props: AiServicesPanelProps) {
           {!hasPrimary && (
             <Button variant="primary" onClick={() => onAdd?.("primary")}>添加 AI 服务</Button>
           )}
-          {hasPrimary && !hasSecondary && (
-            <Button variant="primary" onClick={() => onAdd?.("secondary")}>添加备用 AI 服务</Button>
+          {hasPrimary && (
+            <Button variant="primary" onClick={() => onAdd?.("secondary")}>
+              {connections.length === 1 ? "添加备用 AI 服务" : "添加 AI 服务"}
+            </Button>
           )}
         </div>
       </div>
@@ -138,9 +184,16 @@ export function AiServicesPanel(props: AiServicesPanelProps) {
               <div>
                 <strong>{providerLabel(connection.provider_id)}</strong>
                 <small>{connection.masked_api_key || "未设置密钥"}</small>
+                {connection.probed_capabilities && (
+                  <CapabilityRow
+                    provider={providerLabel(connection.provider_id)}
+                    capabilities={connection.probed_capabilities}
+                  />
+                )}
               </div>
               {index === 0 && <span className="tag">主服务</span>}
               {index === 1 && <span className="tag">备用服务</span>}
+              {index >= 2 && <span className="tag">候补</span>}
             </div>
           ))}
         </div>

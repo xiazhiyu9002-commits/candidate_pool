@@ -21,7 +21,8 @@ class CreateCaseRequest(BaseModel):
 class CaseResponse(BaseModel):
     id: str
     candidate_id: str | None
-    jd_id: str
+    # 岗位被物理删除后置空（岗位快照保留），与 candidate_id 同一套语义。
+    jd_id: str | None
     stage: str
     note: str | None
     candidate_name: str = ""
@@ -30,6 +31,7 @@ class CaseResponse(BaseModel):
     can_advance: bool = True
     blocked_reason: str | None = None
     candidate_deleted: bool = False
+    jd_deleted: bool = False
     last_event: str | None = None
     last_event_at: datetime | None = None
 
@@ -400,13 +402,18 @@ def _contexts(services, ids):
     with services.session_factory() as session:
         rows = session.execute(select(CandidateJobCase, Candidate, Jd)
             .outerjoin(Candidate, CandidateJobCase.candidate_id == Candidate.id)
-            .join(Jd, CandidateJobCase.jd_id == Jd.id).where(CandidateJobCase.id.in_(ids))).all()
+            # 必须是 outerjoin：岗位被物理删除后 jd_id 置空，inner join 会让整条流程从列表消失。
+            .outerjoin(Jd, CandidateJobCase.jd_id == Jd.id).where(CandidateJobCase.id.in_(ids))).all()
     result = {}
     for case, candidate, jd in rows:
         candidate_deleted = candidate is None
         name = candidate.display_name if candidate is not None else case.candidate_name_snapshot
+        # 岗位已删：回落到岗位快照，流程、轮次与面试记录仍可读。
+        jd_deleted = jd is None
+        company = jd.company if jd is not None else (case.jd_company_snapshot or "")
+        jd_title = jd.title if jd is not None else (case.jd_title_snapshot or "")
         reason = None
-        if case.deleted_at or jd.deleted_at or jd.status != "OPEN":
+        if jd_deleted or case.deleted_at or jd.deleted_at or jd.status != "OPEN":
             reason = "岗位已关闭或删除"
         elif candidate_deleted:
             reason = "候选人已删除"
@@ -414,9 +421,9 @@ def _contexts(services, ids):
             reason = "候选人不可推荐或待复核"
         elif case.stage in ("入职", "候选人拒绝", "客户拒绝"):
             reason = "流程已结束，可查看历史或纠错"
-        result[case.id] = {"candidate_name": name or "", "company": jd.company,
-            "jd_title": jd.title, "can_advance": reason is None, "blocked_reason": reason,
-            "candidate_deleted": candidate_deleted}
+        result[case.id] = {"candidate_name": name or "", "company": company,
+            "jd_title": jd_title, "can_advance": reason is None, "blocked_reason": reason,
+            "candidate_deleted": candidate_deleted, "jd_deleted": jd_deleted}
     return result
 
 

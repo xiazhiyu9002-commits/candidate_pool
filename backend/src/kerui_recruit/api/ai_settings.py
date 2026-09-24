@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.providers.ai.config_models import AiConnection, AiProviderConfig
 from kerui_recruit.providers.ai.contracts import ModelRole
-from kerui_recruit.providers.ai.probes import probed_roles
+from kerui_recruit.providers.ai.probes import PROBE_SCHEMA_VERSION, probed_roles
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -32,13 +32,16 @@ class ConnectionUpdate(BaseModel):
     base_url_override: str | None = None
     parameter_style: str | None = None
     models: dict[str, str] = Field(default_factory=dict)
+    # 每个角色槽位的思考强度（角色 → `low`/`high`/`max`）。取值必须落在该角色所用
+    # 模型档案声明的 `supported_reasoning_efforts` 里，由 `validation.validate_connection` 兜底。
+    reasoning_efforts: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
 
 
 class AiConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    connections: list[ConnectionUpdate] = Field(default_factory=list, max_length=2)
+    connections: list[ConnectionUpdate] = Field(default_factory=list)
 
 
 class ConnectionResponse(BaseModel):
@@ -50,7 +53,12 @@ class ConnectionResponse(BaseModel):
     base_url_override: str | None
     parameter_style: str | None
     models: dict[str, str]
+    reasoning_efforts: dict[str, str] = {}
     probed_roles: list[str]
+    # 上次探测的能力矩阵与口径版本：界面据此显示「到底哪一项通过」，
+    # 并且一旦口径升级（probe_version 落后）就知道这份结果已过期。
+    probed_capabilities: dict[str, bool] = {}
+    probe_version: int | None = None
     enabled: bool
 
 
@@ -102,14 +110,42 @@ def _role_models(models: dict[str, str]) -> dict[ModelRole, str]:
     return result
 
 
+def _role_efforts(efforts: dict[str, str]) -> dict[ModelRole, str]:
+    """角色 → 思考强度。档位白名单校验交给 `validation.validate_connection`（它能看到模型档案）。"""
+    result: dict[ModelRole, str] = {}
+    for key, value in efforts.items():
+        try:
+            result[ModelRole(key)] = value
+        except ValueError:
+            raise ApiError(422, "E_AI_INVALID_ROLE", f"未知角色：{key}")
+    return result
+
+
+def _capability_matrix(report) -> dict[str, bool]:
+    """把探测报告压成可落盘、可展示的能力矩阵。"""
+    return {
+        "auth": report.auth.ok,
+        "text": report.text.ok,
+        "json": report.json.ok,
+        "reasoning": report.reasoning.ok,
+        "vision": report.vision.ok,
+    }
+
+
 def _connection_changed(prior: AiConnection, current: AiConnection) -> bool:
-    """判断连接的身份/凭据/路由配置是否变化，变化需重新探测。"""
+    """判断该连接是否需要重新探测。
+
+    返回 True 的两种情况：身份/凭据/路由配置发生变化，或已存的探测结果**口径过期**
+    （``probe_version`` 落后于当前 ``PROBE_SCHEMA_VERSION``）。
+    """
     return (
         prior.provider_id != current.provider_id
         or prior.api_key.get_secret_value() != current.api_key.get_secret_value()
         or prior.base_url_override != current.base_url_override
         or prior.parameter_style != current.parameter_style
         or prior.models != current.models
+        # 探测口径升级后旧结果不再算数：必须重探，否则用户一直看到按旧口径算出的「可用」。
+        or prior.probe_version != PROBE_SCHEMA_VERSION
         or prior.enabled != current.enabled  # false→true 启用需重新探测
     )
 
@@ -126,7 +162,10 @@ def _response(manager, public_view) -> AiConfigResponse:
             base_url_override=item.base_url_override,
             parameter_style=item.parameter_style,
             models={role.value: model for role, model in item.models.items()},
+            reasoning_efforts={role.value: effort for role, effort in item.reasoning_efforts.items()},
             probed_roles=[role.value for role in item.probed_roles],
+            probed_capabilities=dict(item.probed_capabilities),
+            probe_version=item.probe_version,
             enabled=item.enabled,
         ))
     return AiConfigResponse(
@@ -200,6 +239,7 @@ async def put_config(request: Request, update: AiConfigUpdate) -> AiConfigRespon
             base_url_override=item.base_url_override,
             parameter_style=item.parameter_style,
             models=_role_models(item.models),
+            reasoning_efforts=_role_efforts(item.reasoning_efforts),
             enabled=item.enabled,
         ))
         if item.probe_token:
@@ -219,8 +259,12 @@ async def put_config(request: Request, update: AiConfigUpdate) -> AiConfigRespon
             continue
         prior = existing.get(connection.connection_id)
         if prior is not None and not _connection_changed(prior, connection):
-            # Key/供应商/Base URL/风格/模型分配均未变化：复用旧探测结果，不再请求。
-            probed_connections.append(connection.model_copy(update={"probed_roles": prior.probed_roles}))
+            # Key/供应商/Base URL/风格/模型分配均未变化、且探测口径未过期：复用旧结果，不再请求。
+            probed_connections.append(connection.model_copy(update={
+                "probed_roles": prior.probed_roles,
+                "probe_version": prior.probe_version,
+                "probed_capabilities": dict(prior.probed_capabilities),
+            }))
             continue
         token = probe_tokens.get(connection.connection_id)
         report = manager.cached_probe(connection, token) if token else None
@@ -229,7 +273,11 @@ async def put_config(request: Request, update: AiConfigUpdate) -> AiConfigRespon
         probed_roles_result = probed_roles(report, connection)
         if not probed_roles_result:
             raise ApiError(422, "E_AI_UNUSABLE_CONFIG", "连接探测失败：没有可用的能力路由")
-        probed_connections.append(connection.model_copy(update={"probed_roles": probed_roles_result}))
+        probed_connections.append(connection.model_copy(update={
+            "probed_roles": probed_roles_result,
+            "probe_version": PROBE_SCHEMA_VERSION,
+            "probed_capabilities": _capability_matrix(report),
+        }))
 
     try:
         config = AiProviderConfig(connections=probed_connections, catalog_version=manager.catalog().version)

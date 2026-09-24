@@ -29,6 +29,13 @@ def apply_reasoning(
     - 强制思考模型（无 OFF，如 kimi-k3、deepseek-v4-pro）：不发送思考开关（默认即思考），
       仅在命中 supported_reasoning_efforts 时发送 reasoning_effort / thinking_budget。
     - off-only 模型（只有 OFF）：不发送思考开关。
+
+    **本次已经关掉思考时不发强度**：阿里 DashScope 对 `enable_thinking=false` 与
+    `reasoning_effort` 的组合直接回 400 ——
+    `'reasoning_effort' must be 'none' when 'enable_thinking' is false`。
+    实测（2026-09-22）这个 400 被 `QueryParser` 吞成 `degraded=provider_error`，
+    表现成「AI 智能解析永远回退规则链路」，排查时看不到真实原因。
+    所以这里是第二层守卫：调用方（`router`）已经会算好，但组合一旦漏下来必须是安静的正确值。
     """
     # 仅「可切换思考」模型（同时支持非思考与思考）才发送 thinking/enable_thinking 开关；
     # off-only 模型（只有 OFF）本身不思考，也不接受思考开关字段，不应发送。
@@ -39,6 +46,7 @@ def apply_reasoning(
             or ReasoningMode.REQUIRED in profile.supported_reasoning_modes
         )
     )
+    thinking_disabled = togglable and mode == ReasoningMode.OFF
 
     if togglable:
         if mode == ReasoningMode.OFF:
@@ -66,7 +74,7 @@ def apply_reasoning(
                 body["enable_thinking"] = True
             # standard / unknown：不发送思考字段。
 
-    if effort is not None and effort in profile.supported_reasoning_efforts:
+    if effort is not None and effort in profile.supported_reasoning_efforts and not thinking_disabled:
         if style == "siliconflow":
             body["thinking_budget"] = effort
         elif style in ("deepseek", "kimi_open", "kimi_code", "qwen", "zhipu"):

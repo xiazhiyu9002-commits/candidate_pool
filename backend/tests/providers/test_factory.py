@@ -112,6 +112,19 @@ def test_generation_change_does_not_change_embedding_or_reranker() -> None:
     _close(after)
 
 
+def test_routed_parser_reports_when_it_will_fall_back_to_local() -> None:
+    """本地兜底必须能被上层看见。
+
+    真机证据（2026-09-22 智谱 / 火山两轮验收）：连接缺少快速解析角色时（探测判文本不可用），
+    简历解析在 0.2~3.6 秒内就「成功」——一次模型调用都没发生，界面显示解析完成而画像为空。
+    这被误读成「该供应商解析质量差」。`uses_remote_ai()` 让解析路线可以写进抽取诊断。
+    """
+    bundle = build_providers(_settings(), ai_manager=FakeManager("deepseek"))
+    # FakeManager 只声明 VISION，没有快速解析路由 → 会回退本地确定性解析。
+    assert bundle.parser.uses_remote_ai() is False
+    _close(bundle)
+
+
 def _vision_manager(tmp_path) -> AiProviderManager:
     encryption = EncryptionService(key_path=str(tmp_path / "encryption.key"))
     catalog = CatalogService(cache_path=tmp_path / "catalog.json")

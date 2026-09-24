@@ -33,7 +33,12 @@ class SynthesisResult(BaseModel):
 def _format_chunks(chunks: list[RankedChunk]) -> str:
     lines = []
     for index, chunk in enumerate(chunks, start=1):
-        lines.append(f"[{index}] 来源: {chunk.source_url}\n{chunk.text}")
+        # 标题必须带上：招聘站正文通常只有岗位职责，雇主名在页面标题里
+        # （「XX科技招聘算法工程师-北京-BOSS直聘」）。丢掉标题会让模型只能填 null。
+        header = f"[{index}] 来源: {chunk.source_url}"
+        if chunk.title:
+            header = f"[{index}] 标题: {chunk.title}\n来源: {chunk.source_url}"
+        lines.append(f"{header}\n{chunk.text}")
     return "\n\n".join(lines) or "（无证据）"
 
 
@@ -43,7 +48,8 @@ _SYNTHESIS_PROMPT = """你是招聘领域的信息综合器。
 
 输出一个 JSON 对象，字段如下：
 - leads：线索数组，每项含：
-  - company：招聘公司名（未明确则 null）；
+  - company：招聘公司名。**优先从证据的「标题」里取**——招聘页标题常形如「岗位名-公司名-地点」或「公司名招聘岗位名」，
+    标题里出现的公司名属于明确信息，不算臆造；标题里没有再看正文。都没有才填 null；
   - job_title：岗位名称（未明确则 null）；
   - is_hiring：是否在招聘（true/false/null，证据不足填 null）；
   - confidence：0~1 的可信度；
@@ -59,6 +65,7 @@ _SYNTHESIS_PROMPT = """你是招聘领域的信息综合器。
 规则：
 - leads 数组最多返回 20 条不重复线索（公司+岗位去重），不要虚构凑数；
 - 只从证据中提取信息，不得臆造公司、岗位、薪资、时间或"一定在招"的结论；
+- 证据的「标题」与正文同等可信：公司在标题或正文任一处出现过就必须提取，不得因为只出现在标题里而填 null；
 - 若证据明确显示岗位已关闭、已招满、招聘已结束或已过期（如"已停止招聘""招满""招聘结束"等字样），则丢弃该线索，不要输出；
 - 招聘岗位页/职位发布页本身即视为"在招"的正面证据，默认 is_hiring 填 true；仅当证据明确显示已关闭时才填 false；
 - 证据不足以判断在招状态时 is_hiring 填 null，但仍保留该线索供人工核验；
@@ -82,20 +89,22 @@ class SynthesisGenerator:
         query: str,
         chunks: list[RankedChunk],
     ) -> SynthesisResult:
-        try:
-            return await self._llm.complete_json(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": _SYNTHESIS_PROMPT.format(
-                            query=query,
-                            chunks=_format_chunks(chunks),
-                        ),
-                    }
-                ],
-                response_model=SynthesisResult,
-            )
-        except Exception:
-            # On LLM failure, degrade to a raw result with no leads rather than
-            # crashing the whole agent run; the caller treats it as "no result".
-            return SynthesisResult()
+        """综合证据片段为带引用的线索。
+
+        这里**不吞异常**。上游失败必须让调用方看见：一旦在本地把异常变成空结果，
+        「模型不可用」就会伪装成「搜索没找到线索」，前端于是显示「暂无线索」而不是报错。
+        实测 BD 助手连续 14 轮静默返回 0 条线索就是这么来的。
+        降级由 `BdAgent._synthesis_step` 统一处理，并把原因一路带到界面。
+        """
+        return await self._llm.complete_json(
+            messages=[
+                {
+                    "role": "user",
+                    "content": _SYNTHESIS_PROMPT.format(
+                        query=query,
+                        chunks=_format_chunks(chunks),
+                    ),
+                }
+            ],
+            response_model=SynthesisResult,
+        )

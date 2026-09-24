@@ -35,7 +35,10 @@ class _StoredConnection(BaseModel):
     base_url_override: str | None = None
     parameter_style: str | None = None
     models: dict[str, str] = {}
+    reasoning_efforts: dict[str, str] = {}
     probed_roles: list[str] = []
+    probe_version: int | None = None
+    probed_capabilities: dict[str, bool] = {}
     enabled: bool = True
 
 
@@ -93,7 +96,10 @@ class AiConfigStore:
                 base_url_override=item.base_url_override,
                 parameter_style=item.parameter_style,
                 models={ModelRole(k): v for k, v in item.models.items()},
+                reasoning_efforts={ModelRole(k): v for k, v in item.reasoning_efforts.items()},
                 probed_roles=frozenset(ModelRole(r) for r in item.probed_roles),
+                probe_version=item.probe_version,
+                probed_capabilities=dict(item.probed_capabilities),
                 enabled=item.enabled,
             ))
         return AiProviderConfig(
@@ -115,7 +121,10 @@ class AiConfigStore:
                     base_url_override=connection.base_url_override,
                     parameter_style=connection.parameter_style,
                     models={role.value: model for role, model in connection.models.items()},
+                    reasoning_efforts={role.value: effort for role, effort in connection.reasoning_efforts.items()},
                     probed_roles=[role.value for role in connection.probed_roles],
+                    probe_version=connection.probe_version,
+                    probed_capabilities=dict(connection.probed_capabilities),
                     enabled=connection.enabled,
                 )
                 for connection in config.connections
@@ -138,7 +147,10 @@ class AiConfigStore:
                     base_url_override=connection.base_url_override if connection.provider_id == "custom_openai" else None,
                     parameter_style=connection.parameter_style,
                     models=connection.models,
+                    reasoning_efforts=connection.reasoning_efforts,
                     probed_roles=connection.probed_roles,
+                    probe_version=connection.probe_version,
+                    probed_capabilities=dict(connection.probed_capabilities),
                     enabled=connection.enabled,
                 )
                 for connection in config.connections

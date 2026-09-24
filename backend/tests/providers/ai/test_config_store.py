@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers.ai.catalog import CatalogService
@@ -45,9 +45,9 @@ def write_legacy_settings(tmp_path: Path, **values) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def test_config_rejects_more_than_two_enabled_connections():
-    with pytest.raises(ValidationError):
-        AiProviderConfig(connections=[connection("a"), connection("b"), connection("c")])
+def test_config_accepts_more_than_two_connections():
+    config = AiProviderConfig(connections=[connection("a"), connection("b"), connection("c")])
+    assert [item.connection_id for item in config.connections] == ["a", "b", "c"]
 
 
 def test_keys_are_encrypted_and_public_view_is_masked(tmp_path):
@@ -87,3 +87,44 @@ def test_migration_does_not_emit_plaintext_key(tmp_path):
     assert config.connections[0].api_key.get_secret_value() == "custom-secret"
     # 迁移结果不落盘，仅内存态；磁盘不写明文。
     assert not (tmp_path / "ai-providers.json").exists()
+
+
+def test_reasoning_efforts_survive_a_save_load_round_trip(tmp_path):
+    """按槽位配置的思考强度必须落盘并读回。
+
+    只存在内存里的话，重启后设置悄悄回到默认——使用者看到的下拉框是空的，
+    而实际请求已经发了某个档位，两边对不上。
+    """
+    from kerui_recruit.providers.ai.contracts import ModelRole
+
+    store = make_store(tmp_path)
+    store.save(AiProviderConfig(connections=[AiConnection(
+        connection_id="c1",
+        provider_id="deepseek",
+        display_name="DeepSeek",
+        api_key=SecretStr("sk-test"),
+        models={ModelRole.FAST_TEXT: "deepseek-flash"},
+        reasoning_efforts={ModelRole.FAST_TEXT: "low"},
+        probed_roles=frozenset({ModelRole.FAST_TEXT}),
+    )]))
+
+    loaded = store.load().connections[0]
+    assert loaded.reasoning_efforts == {ModelRole.FAST_TEXT: "low"}
+    assert store.public_view().connections[0].reasoning_efforts == {ModelRole.FAST_TEXT: "low"}
+
+
+def test_save_rejects_an_effort_the_model_does_not_declare(tmp_path):
+    """档位不在模型档案声明里 → 保存即失败，不能留下「设了却没生效」的配置。"""
+    from kerui_recruit.providers.ai.contracts import ModelRole
+
+    store = make_store(tmp_path)
+    with pytest.raises(ValueError):
+        store.save(AiProviderConfig(connections=[AiConnection(
+            connection_id="c1",
+            provider_id="deepseek",
+            display_name="DeepSeek",
+            api_key=SecretStr("sk-test"),
+            models={ModelRole.FAST_TEXT: "deepseek-v4-flash"},
+            reasoning_efforts={ModelRole.FAST_TEXT: "max"},
+            probed_roles=frozenset({ModelRole.FAST_TEXT}),
+        )]))

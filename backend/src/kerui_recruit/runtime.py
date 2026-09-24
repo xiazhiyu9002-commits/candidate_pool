@@ -67,6 +67,7 @@ from kerui_recruit.providers.websearch import (
     SerpApiWebSearchProvider,
     TavilyWebSearchProvider,
 )
+from kerui_recruit.reminders.candidate_service import CandidateReminderService
 from kerui_recruit.reminders.mail_service import ReminderMailService
 from kerui_recruit.reminders.service import ReminderService
 from kerui_recruit.backfill.service import BackfillService, no_progress_error
@@ -76,10 +77,15 @@ from kerui_recruit.resumes.backfill import backfill_contact_fingerprints
 from kerui_recruit.schools.backfill import backfill_school_mappings
 from kerui_recruit.schools.seed import seed_schools
 from kerui_recruit.resumes.pipeline import ResumePipeline
+from kerui_recruit.resumes.work_years_rollover import WorkYearsRollover
 from kerui_recruit.scheduler.service import SchedulerService
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
 from kerui_recruit.search.rewrite import SemanticQueryRewriter
+from kerui_recruit.search.parse import QueryParser
 from kerui_recruit.search.review import SearchReviewService
+from kerui_recruit.jd.deletion import JdDeletionService
+from kerui_recruit.resumes.deletion import CandidateDeletionService
+from kerui_recruit.soft_delete.service import SoftDeleteService
 from kerui_recruit.search.service import HybridSearchService
 from kerui_recruit.search.upgrade import (
     REBUILD_STATE_FILE,
@@ -101,6 +107,57 @@ class RuntimeComponents:
     providers: ProviderBundle
 
 
+def _mock_structured_payload() -> dict:
+    """结构化输出（带 response_format）的 mock 内容。
+
+    为什么不能只回 `{"ok": true}`：候选人解析要过 `resumes/validity.check_parsed_resume`
+    的完整性校验（≥3 个内容信号，且「技能 / 有意义的画像 / 有内容的工作经历」至少两项），
+    岗位解析要拿得到 `title` 才能把修订推到 READY。只回 `{"ok": true}` 会让两侧都判「不合格」，
+    e2e 里「导入 → 解析 → 入索引 → 检索」整条链路根本跑不通（实测：修订 FAILED、
+    `E_PARSE_INCOMPLETE`、检索 `index_not_ready`）。
+
+    两个模型都不 forbid extra，所以用一份字段超集同时喂候选人与岗位两套 schema。
+    """
+    return {
+        # —— 候选人侧（满足完整性校验所需的内容信号）
+        "name": "测试候选人",
+        "total_years": 5,
+        "highest_degree": "本科",
+        "location": "上海",
+        "school": "测试大学",
+        "industry": "互联网",
+        "current_company": "测试科技有限公司",
+        "current_title": "后端工程师",
+        "skills": ["Python", "Java", "SQL"],
+        "summary": "五年后端开发经验，负责支付系统与数据平台的建设与稳定性优化。",
+        "experiences": [
+            {"company": "测试科技有限公司", "title": "后端工程师",
+             "start_date": "2021-01", "end_date": "至今",
+             "summary": "负责支付核心链路的开发与维护，支撑日均千万级交易。"},
+        ],
+        "projects": [
+            {"name": "支付清结算平台", "tech_stack": "Python, Kafka, PostgreSQL",
+             "summary": "设计并落地清结算平台，替换旧有批处理流程。"},
+        ],
+        "educations": [
+            {"school": "测试大学", "major": "计算机科学与技术", "degree": "本科"},
+        ],
+        # —— 岗位侧（title 为必填；其余给到能支撑列表与匹配的最小集合）
+        "title": "后端工程师",
+        "company": "测试科技有限公司",
+        "min_years": 5,
+        "core_duties": ["负责支付系统后端开发与维护", "参与系统性能优化与服务治理"],
+        "required_skills": ["Python", "Java"],
+        "plus_skills": ["Kafka"],
+        "ai_category": "NON_AI",
+        "direction": "BACKEND",
+        "career_directions": ["BACKEND"],
+        "business_directions": ["FINANCE"],
+        "candidate_profile_narrative": "需要五年以上后端开发经验，熟悉 Python 与 Java，"
+                                       "有支付或金融系统开发经验。",
+    }
+
+
 def _mock_ai_http_client() -> httpx.AsyncClient:
     """测试用 MockTransport：KERUI_AI_MOCK=1 时注入，不访问真实供应商。"""
 
@@ -117,18 +174,45 @@ def _mock_ai_http_client() -> httpx.AsyncClient:
                 {"id": "glm-5.3-flash"},
                 {"id": "kimi-k2.6"},
                 {"id": "kimi-k3"},
+                {"id": "k3"},
                 {"id": "kimi-for-coding"},
+                {"id": "qwen3.7-plus"},
                 {"id": "deepseek-ai/DeepSeek-V4-Flash"},
                 {"id": "deepseek-ai/DeepSeek-V4-Pro"},
                 {"id": "THUDM/GLM-4.1V-9B-Thinking"},
             ]})
-        body = json.loads(request.content)
-        model = body["model"]
-        if "response_format" in body:
-            return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
-        return httpx.Response(200, json={"choices": [{"message": {"content": f"content-of-{model}"}}]})
+        json.loads(request.content)  # 显式要求请求体是合法 JSON，与真实供应商一致
+        # 两条分支都回结构化 JSON：上游模型未声明 JSON 能力时，provider 会**不发**
+        # `response_format`（见 parameter_mapping 的留痕告警），此时只能靠提示词 + 容错解析，
+        # 所以纯文本分支也必须给出 JSON，否则简历解析永远拿不到字段、被判「不合格」。
+        content = json.dumps(_mock_structured_payload(), ensure_ascii=False)
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _mock_ai_provider_config():
+    """`KERUI_AI_MOCK=1` 时可用的 AI 连接（全部模型角色指向同一个 mock 模型）。
+
+    注意：**不要在 `build_runtime` 里自动写入**。e2e 的首启向导用例
+    （`desktop/tests/ai-settings.spec.ts`）依赖「一开始没有连接」这个初始态，
+    自动注入会让它的「添加 AI 服务」入口消失。这里只作为显式可用的工厂保留，
+    需要「带 AI 配置的 e2e」时由调用方自己写进 AiConfigStore。
+    """
+    from pydantic import SecretStr
+
+    from kerui_recruit.providers.ai.config_models import AiConnection, AiProviderConfig
+    from kerui_recruit.providers.ai.contracts import ModelRole
+
+    roles = list(ModelRole)
+    return AiProviderConfig(connections=[AiConnection(
+        connection_id="mock-fast",
+        provider_id="deepseek",
+        display_name="Mock",
+        api_key=SecretStr("sk-mock"),
+        models={role: "deepseek-ai/DeepSeek-V4-Flash" for role in roles},
+        probed_roles=frozenset(roles),
+    )])
 
 
 def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None = None) -> RuntimeComponents:
@@ -244,6 +328,18 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
     rewriter = SemanticQueryRewriter(
         ai_manager.task_client(TaskKind.QUERY_REWRITE, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE)
     )
+    # AI 智能解析（默认关闭，API 侧 parse_enabled 控制）：一次调用拆出硬条件 + 词条 + 语义查询。
+    # 用快速模型：输入是一句查询、输出是结构化字段，不需要推理档。
+    # **关思考优先**：能关掉思考的模型一律关掉（阿里 qwen3.8-flash 关思考 3.3 秒），
+    # 关不掉时才用 `low`（智谱 glm-5.3-flashx 不指定档位 11.2 秒 → `low` 2.0 秒）。
+    # `prefer_off` 同时让 AI 设置里快速槽位配的强度不参与——否则使用者把快速槽位调成高强度后，
+    # 每次搜索的解析都要多等十几秒。
+    query_parser = QueryParser(
+        ai_manager.task_client(
+            TaskKind.QUERY_PARSE, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE,
+            reasoning_effort="low", prefer_off=True,
+        )
+    )
     from kerui_recruit.search.sync import IndexSyncService
     index_sync_service = IndexSyncService(session_factory=factory, index=index,
         embedding_provider=providers.embedding, jd_index=jd_index, rebuild_tracker=rebuild_tracker)
@@ -278,6 +374,8 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
     )
     mapping_service = MappingService(session_factory=factory)
     reminder_service = ReminderService(session_factory=factory)
+    # 候选人提醒与流程提醒是两套东西（无日期、不进邮件、不受流程状态影响）。
+    candidate_reminder_service = CandidateReminderService(session_factory=factory)
     org_service = OrgService(session_factory=factory)
     backfill_contact_fingerprints(factory, encryption_service)
     with factory() as session, session.begin():
@@ -315,9 +413,18 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
             ai_manager.task_client(TaskKind.CANDIDATE_PROFILE, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE)
         ),
         jd_generator=JdProfileGenerator(
+            # 岗位画像用**快速档**（2026-09-22 真机实测后从推理档改回，用户选定）。
+            # 原先按「需要跨条件取舍」放在推理档 + `ReasoningMode.REQUIRED`，实测在阿里
+            # `qwen3.8-max` 上 **150 秒仍未返回**（7.6 真机：阶段停在 `draft`），
+            # `regen-profile` 因此稳定 504 `E_PROFILE_TIMEOUT`，§6.1 的「单次生成 ≤ 90 秒」达不到。
+            # 与 1.4 的 BD 综合同一条思路：真正的取舍已由硬条件与重排完成，画像只剩
+            # 「压缩 + 逐字引用」；需要更强推理的使用者可以把思考模型填进快速槽位（第 9 点）。
             ai_manager.task_client(TaskKind.JD_PROFILE, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE)
         ),
     )
+    # 随年份滚动的字段（工作年限 / 年龄 / 画像里的对应数字）：每日重算一次。
+    # 画像只做数字就地替换，不调用模型。
+    work_years_rollover = WorkYearsRollover(session_factory=factory)
     match_review_service = MatchReviewService(
         session_factory=factory,
         task_client=ai_manager.task_client(TaskKind.MATCH_REVIEW, ModelRole.FAST_TEXT, ExecutionContext.BACKGROUND, ReasoningMode.OFF),
@@ -337,11 +444,19 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         fetcher=JinaReaderFetcher(client=providers.http_client),
         encryption=encryption_service,
         planner=QueryPlanner(
-            ai_manager.task_client(TaskKind.BD_PLAN, ModelRole.REASONING_TEXT, ExecutionContext.INTERACTIVE, ReasoningMode.REQUIRED)
+            # 规划只产出最多 3 条搜索式，短输入短输出：用快速模型即可，
+            # 走推理模型会白等 10~40 秒。
+            ai_manager.task_client(TaskKind.BD_PLAN, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE, ReasoningMode.OFF)
         ),
         evidence_extractor=EvidenceExtractor(reranker=providers.reranker),
         synthesizer=SynthesisGenerator(
-            ai_manager.task_client(TaskKind.BD_SYNTHESIS, ModelRole.REASONING_TEXT, ExecutionContext.INTERACTIVE, ReasoningMode.REQUIRED)
+            # 综合也走快速模型。原先按「需要跨片段取舍」放在推理档，但那条取舍其实
+            # 已经由上一步的 reranker（bge-reranker-v2-m3）完成了，综合剩下的只是
+            # 「抽取 + 逐字引用」，属于短输出结构化任务。
+            # 实测代价：火山引擎 deepseek-v4-pro 在 REQUIRED 思考下综合 10 个证据片段
+            # 稳定超过 180 秒，把每一次 BD 检索都掐断（表现为「重排之后就结束、没数据」）。
+            # 需要更强推理的用户可以把思考模型填进「快速模型」槽位自行取舍。
+            ai_manager.task_client(TaskKind.BD_SYNTHESIS, ModelRole.FAST_TEXT, ExecutionContext.INTERACTIVE, ReasoningMode.OFF)
         ),
         fallback=bd_search_service,
     )
@@ -390,6 +505,15 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         ai_manager.task_client(TaskKind.MAIL_RESUME_GATE, ModelRole.FAST_TEXT, ExecutionContext.BACKGROUND)
     )
 
+    # 回收站过期清理复用单条删除服务：这样流程快照与解除关联的行为和手动删除一致，
+    # 不会出现「清理后流程还在、但候选人/岗位信息变成空白」。
+    soft_delete_service = SoftDeleteService(
+        factory,
+        candidate_deletion=CandidateDeletionService(
+            factory, index, blob_store=blob_store, task_repository=repository),
+        jd_deletion=JdDeletionService(factory, jd_index=jd_index),
+    )
+
     scheduler_service = SchedulerService(
         session_factory=factory,
         match_service=match_service,
@@ -401,6 +525,8 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         sender_domains=settings.imap_whitelist_domains,
         resume_gate=resume_gate,
         daily_followup_service=daily_followup_service if settings.daily_followup_enabled else None,
+        soft_delete_service=soft_delete_service,
+        work_years_rollover=work_years_rollover,
     )
 
     settings_service = SettingsService(
@@ -424,6 +550,7 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         blob_store=blob_store,
         task_repository=repository,
         search_service=search_service,
+        query_parser=query_parser,
         match_service=match_service,
         jd_pipeline=jd_pipeline,
         export_service=export_service,
@@ -433,6 +560,7 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         diagnostics_service=diagnostics_service,
         mapping_service=mapping_service,
         reminder_service=reminder_service,
+        candidate_reminder_service=candidate_reminder_service,
         org_service=org_service,
         org_import_parser=org_import_parser,
         org_binding_service=org_binding_service,
@@ -469,6 +597,7 @@ def build_runtime(settings: Settings, ai_http_client: httpx.AsyncClient | None =
         search_index=None,
         defer_indexing=True,
         encryption_service=encryption_service,
+        task_repository=repository,
     )
 
     async def parse_resume(payload: dict[str, Any], report=None) -> str:

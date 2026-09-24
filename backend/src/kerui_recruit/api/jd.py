@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 
 from kerui_recruit.api.errors import ApiError
+from kerui_recruit.api.profile_stream import profile_generation_stream, wants_event_stream
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.db.models import Jd, JdRevision
 from kerui_recruit.direction.policy import (
@@ -16,7 +18,15 @@ from kerui_recruit.direction.policy import (
 from kerui_recruit.jd.deletion import JdDeletionService
 from kerui_recruit.jd.extract import UnsupportedJdType, extract_jd_text, split_jd_text
 from kerui_recruit.jd.ingest import IngestJd, JdIngestService
+from kerui_recruit.jd.profile_constraints import (
+    CONSTRAINT_KINDS,
+    CONSTRAINT_STRENGTHS,
+    normalize_constraints,
+    parse_years_requirement,
+)
 from kerui_recruit.jd.structured import ParsedJd
+from kerui_recruit.providers.errors import ProviderError
+from kerui_recruit.providers.profile_pair import REGEN_TIMEOUT_SECONDS
 from kerui_recruit.cases.state import refresh_links
 from kerui_recruit.search.sync import enqueue_sync
 
@@ -299,8 +309,8 @@ _JD_DIRECTION_EDITABLE_FIELDS = frozenset({
     "direction", "career_directions", "career_specializations", "business_directions",
 })
 
-_EXACT_CONSTRAINT_KINDS = frozenset({"school_level", "company_history", "skill", "industry", "other_keyword"})
-_EXACT_CONSTRAINT_STRENGTHS = frozenset({"MUST", "PLUS", "EXCLUDE"})
+_EXACT_CONSTRAINT_KINDS = CONSTRAINT_KINDS
+_EXACT_CONSTRAINT_STRENGTHS = CONSTRAINT_STRENGTHS
 
 
 def _coerce_jd_field(field: str, value: Any) -> Any:
@@ -344,7 +354,9 @@ def _coerce_jd_field(field: str, value: Any) -> Any:
                 "source": str(item.get("source") or "manual"),
                 "source_text": str(item.get("source_text") or ""),
             })
-        return result
+        # 与存库读取侧同一套规整：skill / other_keyword 的 MUST 在这里就降级，
+        # 避免界面显示「必备」而实际不具备淘汰力这种表里不一。
+        return normalize_constraints(result)
     if field == "requirements":
         if not isinstance(value, list):
             raise ApiError(422, "E_JD_FIELD_INVALID", "岗位要求格式不正确")
@@ -370,6 +382,28 @@ def _coerce_jd_field(field: str, value: Any) -> Any:
             return stripped
         return stripped or None
     return value
+
+
+def _apply_profile_years(parsed: dict, revision: JdRevision, *, explicit_min_years: bool = False) -> None:
+    """画像文本里写了年限就以画像为准（最新的人工口径），没写则保留原值。
+
+    年限是**独立于 exact_constraints** 的硬窗口（``[n-1, 2n]``，见
+    ``match/service._years_window``），原本只能来自 JD 原文解析或「解析字段」编辑器——
+    在画像里写「5 年以上」此前不会产生任何筛选。``years`` 为 ``None`` 表示画像明确
+    「经验不限」，要清掉年限要求；``stated=False`` 时**不动** ``min_years``，
+    避免每次改画像都把 JD 解析出的年限抹掉。
+
+    ``explicit_min_years=True``（解析表编辑器一次提交全字段）时直接让路：用户当场手填的
+    年限是比画像文本更明确的意图。
+    """
+    if explicit_min_years:
+        return
+    stated, years = parse_years_requirement(parsed.get("candidate_profile"))
+    if not stated:
+        return
+    value = None if years is None else (int(years) if float(years).is_integer() else float(years))
+    parsed["min_years"] = value
+    revision.min_years = value
 
 
 class UpdateJdFieldRequest(BaseModel):
@@ -443,6 +477,7 @@ def update_jd_field(
             overrides = dict(revision.manual_overrides or {})
             overrides["candidate_profile"] = value
             revision.manual_overrides = overrides
+            _apply_profile_years(parsed, revision)
         elif field == "exact_constraints":
             value = _coerce_jd_field("exact_constraints", command.value)
             parsed["exact_constraints"] = value
@@ -527,6 +562,9 @@ def update_jd_parsed(
                     for p in split_profile_clauses(profile or "")
                 ]
                 parsed["candidate_profile_compact"] = build_profile_pair(profile or "").compact or None
+            # 画像里写了年限就以画像为准（画像属于最新人工口径）；但同一次提交里
+            # 手填过 min_years 时让路给显式字段。
+            _apply_profile_years(parsed, revision, explicit_min_years="min_years" in updates)
 
         # 多值方向：合法化 + 限流（JD 上限 3 个大类），并刷新单值 direction 与评估镜像。
         if _JD_DIRECTION_EDITABLE_FIELDS & updates.keys():
@@ -577,47 +615,103 @@ class ParseConstraintsRequest(BaseModel):
 
 class ParseConstraintsResponse(BaseModel):
     constraints: list[dict]
+    # 年限独立于 exact_constraints（它是 min_years 驱动的硬窗口）；
+    # years_stated 区分「画像没提年限」（保留原值）与「画像明确不限」（清空窗口）。
+    min_years: float | None = None
+    years_stated: bool = False
 
 
 @router.post("/parse-constraints", response_model=ParseConstraintsResponse)
 async def parse_constraints(command: ParseConstraintsRequest, request: Request) -> ParseConstraintsResponse:
-    """按给定画像文本重解析硬条件（AI 判定 MUST/PLUS/EXCLUDE）。
+    """按给定画像文本重解析硬条件与年限（模型 + 规则，**并集**）。
 
-    人工改过画像文本后必须重算，否则硬条件与画像对不上。模型不可用时退化为确定性
-    规则兜底，并在响应里标明实际使用的引擎，避免静默降级。
+    两路都要跑，结果并起来（见 ``merge_requirements``）：模型擅长语义判断（哪句是硬条件、
+    强度怎么定），规则擅长格式固定的客观条件（学历 / 学校档次 / 点名公司 / 年限）。实测模型会把
+    「本科及以上学历，5 年以上经验，具备阿里或字节背景」整段判成空数组，只跑模型会把这些明写的
+    条件静默丢掉，所以不能「模型非空就取代规则」。年限同理：模型优先，模型没给出结论时走规则。
     """
-    from kerui_recruit.jd.profile_constraints import normalize_constraints, parse_exact_constraints
+    from dataclasses import asdict
+    from kerui_recruit.jd.profile_constraints import merge_requirements, parse_exact_constraints
+
+    rule_constraints = normalize_constraints([
+        asdict(c) for c in parse_exact_constraints(command.source_text, source="manual")
+    ])
 
     services: AppServices = request.app.state.services
     generator = getattr(services.backfill_service, "jd_generator", None)
+    requirements = None
     if generator is not None:
         try:
-            constraints = await generator.parse_constraints(command.source_text)
-            if constraints:
-                return ParseConstraintsResponse(constraints=constraints)
+            requirements = await generator.parse_constraints(command.source_text)
         except Exception:  # noqa: BLE001 - 降级路径必须留痕，不能把保存流程卡死
-            logger.exception("AI 硬条件解析失败，退化为确定性规则")
-    from dataclasses import asdict
-    constraints = parse_exact_constraints(command.source_text, source="manual")
+            logger.exception("AI 要求解析失败，退化为确定性规则")
+
+    constraints = merge_requirements(
+        requirements.constraints if requirements is not None else [], rule_constraints
+    )
+    if requirements is not None and requirements.years_stated:
+        stated, years = True, requirements.min_years
+    else:
+        stated, years = parse_years_requirement(command.source_text)
     return ParseConstraintsResponse(
-        constraints=normalize_constraints([asdict(c) for c in constraints])
+        constraints=constraints, min_years=years if stated else None, years_stated=stated
+    )
+
+
+def _jd_profile_error(error: BaseException) -> ApiError:
+    """生成期异常 → ApiError。**同步与 SSE 两条路径共用这一份**，否则同一个失败会给出不同的码。"""
+    if isinstance(error, ApiError):
+        return error
+    if isinstance(error, asyncio.TimeoutError):
+        return ApiError(
+            504, "E_PROFILE_TIMEOUT",
+            f"画像生成超过 {REGEN_TIMEOUT_SECONDS:.0f} 秒未返回，已放弃本次生成；原画像保留，请稍后重试。",
+        )
+    if isinstance(error, LookupError):
+        return ApiError(404, "E_JD_NOT_FOUND", str(error))
+    if isinstance(error, ProviderError):
+        # 供应商不可用（E_AI_NO_PROVIDER / 限流 / 鉴权）不是内部错误：映射成 502/503，
+        # 前端才能区分「可重试的服务不可用」与「真出错了」。实测原来一律压成 500。
+        return ApiError(error.http_status, error.code, error.user_message, error.details)
+    return ApiError(500, "E_PROFILE_GENERATION_FAILED", f"画像生成失败：{error}")
+
+
+async def _generate_jd_profile(
+    services: AppServices, jd_id: str, instruction: str | None, on_stage=None
+) -> dict:
+    """生成一次 JD 画像（不落库）。同步与 SSE 两条路径的唯一实现。"""
+    if services.backfill_service is None:
+        raise ApiError(500, "E_PROFILE_UNAVAILABLE", "画像生成服务不可用")
+    # 服务端硬超时：模型抖动时给出明确文案，而不是让界面一直转圈（问题 #6 的一半）。
+    # 取 `REGEN_TIMEOUT_SECONDS`（略大于画像重写预算），超时后重写预算也就没有意义了。
+    return await asyncio.wait_for(
+        services.backfill_service.regenerate_jd_profile(
+            jd_id, instruction=instruction, on_stage=on_stage
+        ),
+        timeout=REGEN_TIMEOUT_SECONDS,
     )
 
 
 @router.post("/{jd_id}/regen-profile")
-async def regenerate_jd_profile(jd_id: str, command: RegenJdProfileRequest, request: Request) -> dict:
-    """重新生成 JD 候选人画像要求；生成失败保留旧画像并返回明确错误。"""
+async def regenerate_jd_profile(jd_id: str, command: RegenJdProfileRequest, request: Request):
+    """重新生成 JD 候选人画像要求；生成失败保留旧画像并返回明确错误。
+
+    `Accept: text/event-stream` 时改为 SSE，先推阶段（`loading`/`draft`/`repair`）再推结果——
+    交互式入口最坏等 150 秒，只有转圈看不出「还会不会再来一次模型调用」。详见
+    `api/profile_stream.py`（含「为什么复用同一路径做内容协商」）。
+    """
     services: AppServices = request.app.state.services
-    if services.backfill_service is None:
-        raise ApiError(500, "E_PROFILE_UNAVAILABLE", "画像生成服务不可用")
-    try:
-        return await services.backfill_service.regenerate_jd_profile(
-            jd_id, instruction=command.instruction or None
+    if wants_event_stream(request):
+        return profile_generation_stream(
+            lambda on_stage: _generate_jd_profile(
+                services, jd_id, command.instruction or None, on_stage),
+            translate=_jd_profile_error,
+            timeout_seconds=REGEN_TIMEOUT_SECONDS,
         )
-    except LookupError as error:
-        raise ApiError(404, "E_JD_NOT_FOUND", str(error)) from error
+    try:
+        return await _generate_jd_profile(services, jd_id, command.instruction or None)
     except Exception as error:
-        raise ApiError(500, "E_PROFILE_GENERATION_FAILED", f"画像生成失败：{error}") from error
+        raise _jd_profile_error(error) from error
 
 
 @router.delete("/{jd_id}")
@@ -650,7 +744,7 @@ class BulkDeleteResponse(BaseModel):
 
 @router.post("/bulk/delete", response_model=BulkDeleteResponse)
 def bulk_delete_jds_endpoint(command: BulkDeleteRequest, request: Request) -> BulkDeleteResponse:
-    """批量物理删除岗位：逐项返回结果，extra 携带级联删除的流程数量。"""
+    """批量物理删除岗位：逐项返回结果，extra 携带**保留**的流程数量（岗位信息转快照）。"""
     from kerui_recruit.bulk.service import bulk_delete_jds
     services: AppServices = request.app.state.services
     result = bulk_delete_jds(services, command.ids)

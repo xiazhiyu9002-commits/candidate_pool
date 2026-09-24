@@ -126,3 +126,50 @@ def test_purge_expired_removes_only_old_items(session_factory: sessionmaker[Sess
         assert session.get(Candidate, old_cid) is None
         assert session.get(Jd, old_jid) is None
         assert session.get(Candidate, recent_cid) is not None
+
+
+def test_purge_expired_delegates_and_keeps_case_snapshots(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """过期清理走单条删除服务：流程保留，岗位/候选人信息转快照（而非连流程一起删）。"""
+    from datetime import datetime, timedelta, timezone
+
+    from kerui_recruit.db.models import CandidateJobCase
+    from kerui_recruit.jd.deletion import JdDeletionService
+    from kerui_recruit.resumes.deletion import CandidateDeletionService
+
+    with session_factory() as session:
+        candidate = Candidate(display_name="张三")
+        jd = Jd(company="某公司", title="Java")
+        session.add_all([candidate, jd])
+        session.flush()
+        case = CandidateJobCase(candidate_id=candidate.id, jd_id=jd.id, stage="已推荐")
+        session.add(case)
+        session.commit()
+        cid, jid, case_id = candidate.id, jd.id, case.id
+
+    service = SoftDeleteService(session_factory=session_factory)
+    service.soft_delete("candidate", cid)
+    service.soft_delete("jd", jid)
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=31)
+    with session_factory() as session, session.begin():
+        session.get(Candidate, cid).deleted_at = cutoff
+        session.get(Jd, jid).deleted_at = cutoff
+
+    delegated = SoftDeleteService(
+        session_factory=session_factory,
+        candidate_deletion=CandidateDeletionService(session_factory),
+        jd_deletion=JdDeletionService(session_factory),
+    )
+    assert delegated.purge_expired(retention_days=30) == 2
+
+    with session_factory() as session:
+        assert session.get(Candidate, cid) is None
+        assert session.get(Jd, jid) is None
+        case = session.get(CandidateJobCase, case_id)
+        assert case is not None
+        assert case.candidate_id is None and case.jd_id is None
+        assert case.candidate_name_snapshot == "张三"
+        assert case.jd_title_snapshot == "Java" and case.jd_company_snapshot == "某公司"
+        assert case.jd_deleted_at is not None

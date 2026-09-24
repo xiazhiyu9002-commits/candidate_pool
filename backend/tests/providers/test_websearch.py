@@ -61,8 +61,9 @@ def test_tavily_provider_maps_results() -> None:
         "api_key": "test-key",
         "query": "Java 工程师 招聘",
         "max_results": 5,
-        "search_depth": "advanced",
-        "include_raw_content": True,
+        # basic 档位且不取正文：advanced + include_raw_content 是最慢档位，
+        # 正文改由 BdAgent 按来源质量挑前 K 个页面单独抓取。
+        "search_depth": "basic",
         "exclude_domains": [
             "zhihu.com",
             "sohu.com",

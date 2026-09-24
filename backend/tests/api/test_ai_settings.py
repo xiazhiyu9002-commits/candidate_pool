@@ -1,3 +1,4 @@
+import asyncio
 import json
 import httpx
 from fastapi.testclient import TestClient
@@ -8,6 +9,15 @@ from kerui_recruit.runtime import create_runtime_app
 from kerui_recruit.api.ai_settings import _protection_level
 from kerui_recruit.providers.ai.config_models import AiConnection, AiProviderConfig
 from kerui_recruit.providers.ai.contracts import ModelRole
+from kerui_recruit.providers.ai.probes import _PROBE_JSON_PROMPT
+
+# JSON 能力探测要求「业务同形对象」，裸 {"ok": true} 不再放行。
+PROBE_JSON_OK = '{"name": "张三", "skills": ["Python"], "total_years": 5}'
+
+
+def _is_json_probe(request: httpx.Request) -> bool:
+    body = json.loads(request.content)
+    return body["messages"][0]["content"] == _PROBE_JSON_PROMPT
 
 
 def _mock_ai_client() -> httpx.AsyncClient:
@@ -17,7 +27,9 @@ def _mock_ai_client() -> httpx.AsyncClient:
                 {"id": "deepseek-flash"},
                 {"id": "deepseek-v4-pro"},
             ]})
-        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+        if _is_json_probe(request):
+            return httpx.Response(200, json={"choices": [{"message": {"content": PROBE_JSON_OK}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "content"}}]})
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -27,7 +39,9 @@ def _counting_ai_client(calls: list) -> httpx.AsyncClient:
         calls.append(request.url.path)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "deepseek-flash"}]})
-        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+        if _is_json_probe(request):
+            return httpx.Response(200, json={"choices": [{"message": {"content": PROBE_JSON_OK}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "content"}}]})
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -43,13 +57,14 @@ def _headers():
     return {"X-Kerui-Session": "test"}
 
 
-def test_catalog_has_seven_providers(tmp_path):
+def test_catalog_has_nine_providers(tmp_path):
     client = TestClient(_app(tmp_path))
     response = client.get("/api/ai/catalog", headers=_headers())
     assert response.status_code == 200
     body = response.json()
     assert set(p["provider_id"] for p in body["providers"]) == {
-        "deepseek", "kimi_open", "kimi_code", "qwen", "zhipu", "siliconflow", "custom_openai",
+        "deepseek", "kimi_open", "kimi_code", "qwen", "qwen_code",
+        "zhipu", "zhipu_code", "siliconflow", "custom_openai",
     }
     assert body["default_provider_id"] == "deepseek"
 
@@ -75,7 +90,7 @@ def test_config_never_returns_key(tmp_path):
     assert "****" in body["connections"][0]["masked_api_key"]
 
 
-def test_more_than_two_connections_is_422(tmp_path):
+def test_connections_beyond_two_are_saved_and_keep_their_order(tmp_path):
     client = TestClient(_app(tmp_path))
     connections = [
         {"provider_id": "deepseek", "display_name": "a", "api_key": "k1", "models": {"fast_text": "deepseek-v4-flash"}},
@@ -83,7 +98,30 @@ def test_more_than_two_connections_is_422(tmp_path):
         {"provider_id": "zhipu", "display_name": "c", "api_key": "k3", "models": {"fast_text": "glm-4.7-flashx"}},
     ]
     response = client.put("/api/ai/config", json={"connections": connections}, headers=_headers())
-    assert response.status_code == 422
+    assert response.status_code == 200
+    body = response.json()
+    # 数量不设上限；返回顺序即用户排定的主备顺序。
+    assert [c["display_name"] for c in body["connections"]] == ["a", "b", "c"]
+    # 前两个连接能力重叠 → 双服务保护；第三个是候补。
+    assert body["protection_level"] == "dual"
+
+
+def test_reordering_connections_changes_which_two_are_primary(tmp_path):
+    client = TestClient(_app(tmp_path))
+    first = client.put("/api/ai/config", headers=_headers(), json={"connections": [
+        {"provider_id": "deepseek", "display_name": "a", "api_key": "k1", "models": {"fast_text": "deepseek-v4-flash"}},
+        {"provider_id": "qwen", "display_name": "b", "api_key": "k2", "models": {"fast_text": "qwen3.8-flash"}},
+    ]})
+    assert first.status_code == 200
+    ids = [c["connection_id"] for c in first.json()["connections"]]
+
+    # 用户把第二个连接移到最上面 → 顺序即主备顺序，配置原样回显。
+    reordered = client.put("/api/ai/config", headers=_headers(), json={"connections": [
+        {"connection_id": ids[1], "provider_id": "qwen", "display_name": "b", "models": {"fast_text": "qwen3.8-flash"}},
+        {"connection_id": ids[0], "provider_id": "deepseek", "display_name": "a", "models": {"fast_text": "deepseek-v4-flash"}},
+    ]})
+    assert reordered.status_code == 200
+    assert [c["display_name"] for c in reordered.json()["connections"]] == ["b", "a"]
 
 
 def test_new_connection_without_key_is_422(tmp_path):
@@ -365,7 +403,9 @@ def test_probe_receipt_rejects_model_swap(tmp_path):
         model = json.loads(request.content)["model"]
         if model == "model-b":
             return httpx.Response(404, json={"error": {"message": "model model-b not found"}})
-        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+        if _is_json_probe(request):
+            return httpx.Response(200, json={"choices": [{"message": {"content": PROBE_JSON_OK}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "content"}}]})
 
     app = create_runtime_app(
         Settings(data_root=tmp_path / "data", session_token=SecretStr("test")),
@@ -439,6 +479,72 @@ def test_unchanged_connection_is_not_reprobed(tmp_path):
     assert len(calls) == before
 
 
+def test_probe_capability_matrix_is_persisted_and_returned(tmp_path):
+    """能力矩阵必须随连接落盘并回给前端。
+
+    只显示一个「可用」无法解释「为什么显示可用但解析一直失败」；落盘 auth/text/json/
+    reasoning/vision 五项事实后，界面才能指出到底哪一项没过。
+    """
+    from kerui_recruit.providers.ai.probes import PROBE_SCHEMA_VERSION
+
+    client = TestClient(_app(tmp_path))
+    response = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-v4-flash"},
+    }]})
+    assert response.status_code == 200
+    connection = response.json()["connections"][0]
+    assert connection["probe_version"] == PROBE_SCHEMA_VERSION
+    # 五项能力都在矩阵里；该 mock 一律回 200，因此全部通过。
+    # 「某几项为 False」的分支由 tests/providers/ai/test_probes.py 覆盖。
+    assert set(connection["probed_capabilities"]) == {
+        "auth", "text", "json", "reasoning", "vision",
+    }
+    assert all(connection["probed_capabilities"].values())
+
+    # 重新读取配置（走磁盘）也必须带上矩阵与版本。
+    reloaded = client.get("/api/ai/config", headers=_headers()).json()["connections"][0]
+    assert reloaded["probed_capabilities"] == connection["probed_capabilities"]
+    assert reloaded["probe_version"] == PROBE_SCHEMA_VERSION
+
+
+def test_stale_probe_version_forces_reprobe(tmp_path):
+    """探测口径升级后，即使连接配置一字未改也必须重探。
+
+    否则用户会一直看到按旧口径算出的「可用」——JSON 探测从 ``{"ok": true}`` 收紧为
+    业务同形对象就是这种口径升级。
+    """
+    calls: list = []
+    app = create_runtime_app(
+        Settings(data_root=tmp_path / "data", session_token=SecretStr("test")),
+        ai_http_client=_counting_ai_client(calls),
+    )
+    client = TestClient(app)
+    first = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-v4-flash"},
+    }]})
+    assert first.status_code == 200
+    cid = first.json()["connections"][0]["connection_id"]
+
+    # 模拟「按旧口径保存过」：把落盘的 probe_version 清空。
+    manager = app.state.services.ai_manager
+    config = manager.config
+    stale = config.model_copy(update={
+        "connections": [c.model_copy(update={"probe_version": None}) for c in config.connections],
+    })
+    asyncio.run(manager.update_config(stale))
+
+    before = len(calls)
+    second = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "connection_id": cid, "provider_id": "deepseek", "display_name": "a",
+        "models": {"fast_text": "deepseek-v4-flash"},
+    }]})
+
+    assert second.status_code == 200
+    assert len(calls) > before  # 口径过期 → 重新探测
+
+
 def test_add_backup_while_primary_down(tmp_path):
     state = {"deepseek_down": False}
 
@@ -450,7 +556,9 @@ def test_add_backup_while_primary_down(tmp_path):
         model = json.loads(request.content)["model"]
         if model == "deepseek-v4-flash" and state["deepseek_down"]:
             return httpx.Response(503, json={"error": {"message": "busy"}})
-        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+        if _is_json_probe(request):
+            return httpx.Response(200, json={"choices": [{"message": {"content": PROBE_JSON_OK}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "content"}}]})
 
     app = create_runtime_app(
         Settings(data_root=tmp_path / "data", session_token=SecretStr("test")),
@@ -523,13 +631,32 @@ def test_disable_then_enable_reprobes_and_restores_routing(tmp_path):
     assert enabled.json()["connections"][0]["probed_roles"] == ["fast_text"]
 
 
-def test_reasoning_model_in_fast_text_is_422(tmp_path):
+def test_thinking_model_in_fast_text_is_accepted(tmp_path):
+    """思考模型可以填进「快速模型」槽位（第 9 点需求）。
+
+    这条断言**刻意反转**了旧行为：以前 deepseek-v4-pro 这类只声明 reasoning_text 的
+    模型填进 fast_text 会被保存前 422 拒掉（旧测试名为
+    `test_reasoning_model_in_fast_text_is_422`）。现在允许使用者用思考模型换质量，
+    代价是变慢，由使用者自行取舍。
+    """
     calls: list = []
     client = TestClient(_counting_app(tmp_path, calls))
-    # deepseek-v4-pro 是 reasoning 模型，填入 fast_text → 保存前 422 且零外部请求。
     response = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
         "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
         "models": {"fast_text": "deepseek-v4-pro"},
+    }]})
+    assert response.status_code == 200
+    assert calls  # 放行之后会走真实探测
+    assert response.json()["connections"][0]["probed_roles"] == ["fast_text"]
+
+
+def test_unrelated_model_still_rejected_for_vision_slot(tmp_path):
+    """放开快速槽位不得顺手放开视觉槽位：纯文本模型填视觉槽仍要 422 且零外部请求。"""
+    calls: list = []
+    client = TestClient(_counting_app(tmp_path, calls))
+    response = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"vision": "deepseek-v4-pro"},
     }]})
     assert response.status_code == 422
     assert calls == []
@@ -553,3 +680,71 @@ def test_200_save_probed_roles_have_targets(tmp_path):
         cid = conn["connection_id"]
         for role in conn["probed_roles"]:
             assert role in serving.get(cid, frozenset())
+
+
+def test_reasoning_efforts_are_saved_and_echoed(tmp_path):
+    """界面选的思考强度必须原样保存并回显，否则刷新后下拉框会跳回默认。"""
+    client = TestClient(_app(tmp_path))
+    put = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-flash"},
+        "reasoning_efforts": {"fast_text": "low"},
+    }]})
+    assert put.status_code == 200
+    assert put.json()["connections"][0]["reasoning_efforts"] == {"fast_text": "low"}
+    # 重新读取（走磁盘）同样带上，且不改动探测结果。
+    reloaded = client.get("/api/ai/config", headers=_headers()).json()["connections"][0]
+    assert reloaded["reasoning_efforts"] == {"fast_text": "low"}
+    assert reloaded["probed_roles"] == ["fast_text"]
+
+
+def test_changing_only_reasoning_effort_does_not_reprobe(tmp_path):
+    """只改强度不该触发重新探测：探测结果与档位无关，重探只会白等一次真实调用。"""
+    calls: list = []
+    client = TestClient(_counting_app(tmp_path, calls))
+    first = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-flash"},
+    }]})
+    assert first.status_code == 200
+    cid = first.json()["connections"][0]["connection_id"]
+
+    before = len(calls)
+    second = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "connection_id": cid, "provider_id": "deepseek", "display_name": "a",
+        "models": {"fast_text": "deepseek-flash"},
+        "reasoning_efforts": {"fast_text": "high"},
+    }]})
+    assert second.status_code == 200
+    assert second.json()["connections"][0]["reasoning_efforts"] == {"fast_text": "high"}
+    assert len(calls) == before
+
+
+def test_unknown_effort_is_422_without_upstream_request(tmp_path):
+    """档位不在模型档案声明里 → 保存前 422 且零外部请求。
+
+    `deepseek-v4-flash` 只声明 `low`/`high`；放行 `max` 会让配置显示已设置、
+    而 `apply_reasoning` 因为档位不在声明里静默不发字段。
+    """
+    calls: list = []
+    client = TestClient(_counting_app(tmp_path, calls))
+    response = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-v4-flash"},
+        "reasoning_efforts": {"fast_text": "max"},
+    }]})
+    assert response.status_code == 422
+    assert calls == []
+
+
+def test_unknown_effort_role_is_422(tmp_path):
+    calls: list = []
+    client = TestClient(_counting_app(tmp_path, calls))
+    response = client.put("/api/ai/config", headers=_headers(), json={"connections": [{
+        "provider_id": "deepseek", "display_name": "a", "api_key": "k1",
+        "models": {"fast_text": "deepseek-flash"},
+        "reasoning_efforts": {"fast": "low"},
+    }]})
+    assert response.status_code == 422
+    assert response.json()["code"] == "E_AI_INVALID_ROLE"
+    assert calls == []

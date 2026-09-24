@@ -6,7 +6,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.models import JdRevision, JdRequirement
-from kerui_recruit.jd.structured import JdParser
+from kerui_recruit.jd.profile_constraints import merge_rule_constraints
+from kerui_recruit.jd.structured import ExactConstraint, JdParser
 from kerui_recruit.search.sync import enqueue_sync
 
 
@@ -36,6 +37,14 @@ class JdPipeline:
         try:
             # Never hold the SQLite write lock across an external provider await.
             parsed = await self.parser.parse_jd(source_text or "")
+            # 模型 ∪ 规则：JD 导入此前只跑模型，明写的学历 / 年限 / 公司背景会随模型抖动丢失
+            # （实测同一份多段 JD 两次导入，一次有 degree 一次没有）。这里在唯一入口补齐，
+            # 远端 / 本地 / 视觉三种解析器共用同一套兜底。
+            merged, rule_years = merge_rule_constraints(parsed.exact_constraints, source_text)
+            parsed.exact_constraints = [ExactConstraint(**item) for item in merged]
+            # 年限只在模型没给出时才用规则兜底——模型的判断通常更细，不覆盖它。
+            if parsed.min_years is None and rule_years is not None:
+                parsed.min_years = rule_years
             with self.session_factory() as session:
                 session.connection().exec_driver_sql("BEGIN IMMEDIATE")
                 revision = session.get(JdRevision, revision_id)

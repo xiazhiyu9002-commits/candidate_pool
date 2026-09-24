@@ -1,9 +1,12 @@
 import { useEffect, useState, type RefObject } from "react";
-import type { CandidateListItem, CandidateSearchItem, ParsedEducationData, ParsedResumeData, SearchReviewState } from "../App";
+import type {
+  CandidateListItem, CandidateSearchItem, ParsedEducationData, ParsedResumeData,
+  SearchConditionView, SearchPlanEcho, SearchReviewState,
+} from "../App";
 import type { CandidateKeywordOperator } from "../api/client";
 import { CANDIDATE_COLUMNS, CandidateTable, type CandidateColumnKey } from "../components/CandidateTable";
 import { CareerDirectionFilter } from "../components/DirectionPicker";
-import { Button } from "../components/ui";
+import { Button, InfoTip } from "../components/ui";
 import { BUSINESS_DIRECTION_OPTIONS } from "../constants/directions";
 
 export interface SearchFilterDraft {
@@ -20,6 +23,8 @@ export interface SearchFilterDraft {
   phone: string;
   gender: string;
   name: string;
+  /** 沟通文本：按子串匹配候选人沟通记录（备注不进索引，由后端在 SQLite 层过滤）。 */
+  communicationNote: string;
   company: string;
   title: string;
   school: string;
@@ -36,7 +41,7 @@ export interface SearchFilterDraft {
 export const EMPTY_SEARCH_FILTER_DRAFT: SearchFilterDraft = {
   minYears: "", maxYears: "", minAge: "", maxAge: "", degree: "",
   locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "",
-  phone: "", gender: "", name: "", company: "", title: "", school: "",
+  phone: "", gender: "", name: "", communicationNote: "", company: "", title: "", school: "",
   careerDirections: [], careerSpecializations: [], businessDirections: [],
   schoolRegion: "",
 };
@@ -61,15 +66,45 @@ function readStoredZoom(): number {
   return Number.isFinite(parsed) ? clampZoom(parsed) : 1;
 }
 
+/** 生效条件的中文名：键同时兼容后端 `CandidateFilters` 字段名与旧的单值别名。 */
 const CONDITION_LABELS: Record<string, string> = {
   location: "现居",
   preferred_location: "意向",
+  locations: "现居",
+  preferred_locations: "意向",
   min_years: "年限≥",
   max_years: "年限≤",
+  min_age: "年龄≥",
+  max_age: "年龄≤",
   highest_degree: "学历",
   max_qs_rank: "QS",
   school_level: "学校等级",
+  school_region: "高校属地",
   exclude_skills: "排除",
+  phone: "手机号",
+  gender: "性别",
+  name: "姓名",
+  communication_note: "沟通文本",
+  company: "公司",
+  companies: "公司",
+  title: "职位",
+  school: "学校",
+  career_directions: "职业方向",
+  career_specializations: "职业细分",
+  business_directions: "业务方向",
+};
+
+/** 生效条件来源的中文标注：面板手填 > AI 解析 > 规则解析。 */
+const CONDITION_SOURCE_LABELS: Record<string, string> = {
+  panel: "面板手填",
+  llm: "AI 解析",
+  rule: "规则解析",
+};
+
+const PLAN_SOURCE_LABELS: Record<string, string> = {
+  llm: "AI 解析",
+  mixed: "AI + 规则",
+  rule: "规则解析",
 };
 
 function pageWindow(current: number, totalPages: number): (number | "…")[] {
@@ -93,6 +128,9 @@ export interface TalentPoolPageProps {
   onRewriteEnabledChange: (value: boolean) => void;
   searchBody: boolean;
   onSearchBodyChange: (value: boolean) => void;
+  /** AI 智能解析：默认关闭，三种模式均可用。 */
+  parseEnabled: boolean;
+  onParseEnabledChange: (value: boolean) => void;
   searching: boolean;
   searchFilterDraft: SearchFilterDraft;
   onSearchFilterChange: (draft: SearchFilterDraft) => void;
@@ -101,7 +139,21 @@ export interface TalentPoolPageProps {
   batchTimedOut: boolean;
   hasSearched: boolean;
   results: CandidateSearchItem[];
-  searchConditions: { field: string; value: string; confidence: string }[];
+  searchConditions: SearchConditionView[];
+  /**
+   * 被判定「硬筛筛空」而退化为软排的条件字段名（后端 `query_plan.relaxed_conditions`）。
+   * 这些条件仍在生效条件里显示，但只参与打分、不再过滤。
+   */
+  relaxedSearchFields: string[];
+  /** AI 解析回显（词条 / 语义查询 / 未识别片段）；未开启解析时为 null。 */
+  searchPlanEcho: SearchPlanEcho | null;
+  /** 用户手动删掉的生效条件，可一键恢复。 */
+  removedConditions: SearchConditionView[];
+  onRemoveSearchCondition: (field: string, value: string) => void;
+  onEditSearchCondition: (field: string, value: string) => void;
+  onRestoreSearchCondition: (field: string) => void;
+  /** 空结果自诊断：去掉全部推断条件并重搜（可能是解析误判）。 */
+  onDropInferredConditions: () => void;
   candidates: CandidateListItem[];
   candidatePage: number;
   candidateTotal: number;
@@ -123,12 +175,16 @@ export interface TalentPoolPageProps {
   onColumnsMenuOpenChange: (open: boolean) => void;
   onScrollTop: () => void;
   onUpdateField: (candidateId: string, field: string, value: unknown) => Promise<void>;
+  /** 保存沟通记录（候选人级备注，不进画像与索引）。 */
+  onSaveCommunicationNote: (candidateId: string, note: string) => Promise<void>;
   onEditEducation: (candidateId: string, educations: ParsedEducationData[]) => void;
   onEditProfile: (candidateId: string, summary: string | null, source: string | null, stale: boolean) => void;
   onMatch: (candidateId: string, name: string) => void;
   onPreview: (revisionId: string, name?: string, filename?: string) => void;
   onDownload: (revisionId: string, filename: string) => void;
   onCreateCase: (candidateId: string, name: string) => void;
+  /** 建提醒：建好后出现在首页「今日待办」的「我的提醒」列。 */
+  onCreateReminder: (candidateId: string, name: string) => void;
   /** 常规重新解析：正常页走文本/视觉解析，只有异常页 OCR。 */
   onReparse: (revisionId: string) => Promise<void>;
   /** 强制 OCR：整份走 OCR，扫描件/乱码简历专用。 */
@@ -158,14 +214,17 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
     query, onQueryChange, searchMode, onSearchModeChange, searching,
     keywordOperator, onKeywordOperatorChange, rewriteEnabled, onRewriteEnabledChange,
     searchBody, onSearchBodyChange,
+    parseEnabled, onParseEnabledChange,
     searchFilterDraft, onSearchFilterChange,
     batchProgress, batchTaskIds, batchTimedOut, hasSearched, results, searchConditions, candidates,
+    relaxedSearchFields, searchPlanEcho, removedConditions, onRemoveSearchCondition, onEditSearchCondition,
+    onRestoreSearchCondition, onDropInferredConditions,
     candidatePage, candidateTotal, candidateTotalPages, visibleColumns, columnOrder, columnsMenuOpen,
     candidatePageSize, onCandidatePageSizeChange,
     candidateListRef, onSubmitSearch, onContinueBatchPolling,
     onLoadCandidates, onCloseSearchResults, onResetSearch, onToggleColumn, onMoveColumn,
-    onColumnsMenuOpenChange, onScrollTop, onUpdateField, onEditEducation, onEditProfile,
-    onMatch, onPreview, onDownload, onCreateCase, onReparse, onForceReparse, onOpenReview, onOpenParsed, onDelete,
+    onColumnsMenuOpenChange, onScrollTop, onUpdateField, onSaveCommunicationNote, onEditEducation, onEditProfile,
+    onMatch, onPreview, onDownload, onCreateCase, onCreateReminder, onReparse, onForceReparse, onOpenReview, onOpenParsed, onDelete,
     selectedCandidateIds, bulkBusy, onToggleCandidateSelect, onToggleCandidateSelectAll,
     onBulkDelete, onBulkReparse, onBulkForceOcr, onBulkMatch, onBulkDownload,
     searchReview, selectedSearchCount, onBulkSearchReview, onCancelSearchReview, onRetrySearchReview,
@@ -202,6 +261,10 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
   const resultsTotalPages = Math.max(1, Math.ceil(results.length / resultsPageSize));
   const pagedResults = results.slice((resultsPage - 1) * resultsPageSize, resultsPage * resultsPageSize);
 
+  // 推断出来的条件（规则/AI 解析，非面板手填）：0 结果时最可疑，提供一键去掉重搜。
+  const inferredConditions = searchConditions.filter(
+    (condition) => condition.confidence === "inferred" && condition.source !== "panel");
+
   const resultsTable = pagedResults.length === 0 ? null : (
     <CandidateTable
       rows={pagedResults.map((item) => ({
@@ -214,17 +277,20 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
         parsed: item.parsed_data,
         highlights: reviewItems[item.candidate_id]?.highlights,
         risks: reviewItems[item.candidate_id]?.risks,
+        communicationNote: item.communication_note ?? null,
       }))}
       visibleColumns={visibleColumns}
       columnOrder={columnOrder}
       onMoveColumn={onMoveColumn}
       onUpdateField={onUpdateField}
+      onSaveCommunicationNote={onSaveCommunicationNote}
       onEditEducation={onEditEducation}
       onEditProfile={onEditProfile}
       onMatch={onMatch}
       onPreview={onPreview}
       onDownload={onDownload}
       onCreateCase={onCreateCase}
+      onCreateReminder={onCreateReminder}
       onReparse={onReparse}
       onForceReparse={onForceReparse}
       onOpenReview={onOpenReview}
@@ -249,17 +315,20 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
         parsed: c.parsed_data,
         revisionStatus: c.revision_status,
         reviewError: c.error_message || c.error_code,
+        communicationNote: c.communication_note ?? null,
       }))}
       visibleColumns={visibleColumns}
       columnOrder={columnOrder}
       onMoveColumn={onMoveColumn}
       onUpdateField={onUpdateField}
+      onSaveCommunicationNote={onSaveCommunicationNote}
       onEditEducation={onEditEducation}
       onEditProfile={onEditProfile}
       onMatch={onMatch}
       onPreview={onPreview}
       onDownload={onDownload}
       onCreateCase={onCreateCase}
+      onCreateReminder={onCreateReminder}
       onReparse={onReparse}
       onForceReparse={onForceReparse}
       onOpenReview={onOpenReview}
@@ -282,7 +351,9 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
 
   return (
     <>
-      <form className="toolbar" onSubmit={(event) => { event.preventDefault(); onSubmitSearch(); }}>
+      {/* 工具栏控件较多（模式/逻辑/正文开关/改写/解析/筛选），窄屏必须允许换行：
+          否则会横向溢出并把相邻按钮压在下面，点击事件被别的元素截走（e2e 实测）。 */}
+      <form className="toolbar" style={{ flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); onSubmitSearch(); }}>
         <div className="search">
           <input
             value={query}
@@ -305,17 +376,19 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
           ))}
         </div>
         {searchMode === "keyword" ? (
-          <>
-            <select
-              className="keyword-operator"
-              aria-label="关键词逻辑"
-              value={keywordOperator}
-              onChange={(event) => onKeywordOperatorChange(event.target.value as CandidateKeywordOperator)}
-            >
-              <option value="smart">智能排序</option>
-              <option value="and">同时满足</option>
-              <option value="or">满足任一</option>
-            </select>
+          <select
+            className="keyword-operator"
+            aria-label="关键词逻辑"
+            value={keywordOperator}
+            onChange={(event) => onKeywordOperatorChange(event.target.value as CandidateKeywordOperator)}
+          >
+            <option value="smart">智能排序</option>
+            <option value="and">同时满足</option>
+            <option value="or">满足任一</option>
+          </select>
+        ) : null}
+        {searchMode !== "vector" ? (
+          <span className="rewrite-toggle-group">
             <label className="rewrite-toggle">
               <input
                 type="checkbox"
@@ -324,37 +397,110 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
                 onChange={(event) => onSearchBodyChange(event.target.checked)}
               />
               <span>检索经历正文</span>
-              <span className="muted">工作职责 + 项目描述</span>
             </label>
-          </>
-        ) : (
+            <InfoTip text="工作职责 + 项目描述（仅影响关键词通道）" />
+          </span>
+        ) : null}
+        {searchMode !== "keyword" ? (
+          <span className="rewrite-toggle-group">
+            <label className="rewrite-toggle">
+              <input
+                type="checkbox"
+                aria-label="AI 语义改写"
+                checked={rewriteEnabled}
+                onChange={(event) => onRewriteEnabledChange(event.target.checked)}
+              />
+              <span>AI 语义改写</span>
+            </label>
+            <InfoTip text="可能增加搜索时间" />
+          </span>
+        ) : null}
+        <span className="rewrite-toggle-group">
           <label className="rewrite-toggle">
             <input
               type="checkbox"
-              aria-label="AI 语义改写"
-              checked={rewriteEnabled}
-              onChange={(event) => onRewriteEnabledChange(event.target.checked)}
+              aria-label="AI 智能解析"
+              checked={parseEnabled}
+              onChange={(event) => onParseEnabledChange(event.target.checked)}
             />
-            <span>AI 语义改写</span>
-            <span className="muted">可能增加搜索时间</span>
+            <span>AI 智能解析</span>
           </label>
-        )}
+          <InfoTip text="拆出硬条件 + 词条 + 语义查询" />
+        </span>
         <div className="toolbar__divider" />
         <button type="button" className="btn btn-secondary" onClick={() => setFiltersOpen(!filtersOpen)}>精确筛选</button>
       </form>
-      {hasSearched && searchConditions.length > 0 && (
+      {hasSearched && (searchConditions.length > 0 || removedConditions.length > 0) && (
         <div className="search-conditions" role="list" aria-label="生效硬条件">
           <span className="muted">生效硬条件：</span>
-          {searchConditions.map((condition, index) => (
-            <span
-              key={`${condition.field}-${condition.value}-${index}`}
-              className={`condition-tag${condition.confidence === "inferred" ? " is-inferred" : ""}`}
-              role="listitem"
-            >
-              {CONDITION_LABELS[condition.field] ?? condition.field} {condition.value}
-              {condition.confidence === "inferred" && <em className="muted">推断</em>}
-            </span>
-          ))}
+          {searchConditions.map((condition, index) => {
+            const label = CONDITION_LABELS[condition.field] ?? condition.field;
+            const source = condition.source ? CONDITION_SOURCE_LABELS[condition.source] ?? condition.source : null;
+            // 硬筛筛空 → 已退化为软排：条件照常展示（它仍是排序信号），但**不再过滤**。
+            // 不标出来的话，用户会以为结果里每个人都满足这条条件。
+            const relaxed = relaxedSearchFields.includes(condition.field);
+            return (
+              <span
+                key={`${condition.field}-${condition.value}-${index}`}
+                className={`condition-tag${condition.confidence === "inferred" ? " is-inferred" : ""}${relaxed ? " is-relaxed" : ""}`}
+                role="listitem"
+              >
+                {label} {condition.value}
+                {source ? <em className="muted">{source}</em> : null}
+                {condition.confidence === "inferred" && !source ? <em className="muted">推断</em> : null}
+                {relaxed ? (
+                  <em className="muted" title="硬筛无匹配，已改为参与排序、不再过滤">已退化为排序</em>
+                ) : null}
+                <button
+                  type="button"
+                  className="condition-tag__action"
+                  aria-label={`修改条件 ${label} ${condition.value}`}
+                  title="回填到精确筛选面板"
+                  onClick={() => { setFiltersOpen(true); onEditSearchCondition(condition.field, condition.value); }}
+                >改</button>
+                <button
+                  type="button"
+                  className="condition-tag__action"
+                  aria-label={`移除条件 ${label} ${condition.value}`}
+                  title="从生效条件里去掉"
+                  onClick={() => onRemoveSearchCondition(condition.field, condition.value)}
+                >×</button>
+              </span>
+            );
+          })}
+          {removedConditions.map((condition) => {
+            const label = CONDITION_LABELS[condition.field] ?? condition.field;
+            return (
+              <button
+                key={`removed-${condition.field}`}
+                type="button"
+                className="condition-tag is-removed"
+                aria-label={`恢复条件 ${label} ${condition.value}`}
+                title="恢复该条件"
+                onClick={() => onRestoreSearchCondition(condition.field)}
+              >
+                {label} {condition.value}
+                <em className="muted">已移除，点击恢复</em>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {hasSearched && searchPlanEcho && (
+        <div className="search-parse-echo" role="group" aria-label="AI 解析回显">
+          <span className="search-parse-echo__item">
+            <em className="muted">解析来源</em>{PLAN_SOURCE_LABELS[searchPlanEcho.source] ?? searchPlanEcho.source}
+          </span>
+          <span className="search-parse-echo__item">
+            <em className="muted">检索词条</em>{searchPlanEcho.keywordTerms || "—"}
+          </span>
+          <span className="search-parse-echo__item">
+            <em className="muted">语义查询</em>{searchPlanEcho.semanticQuery || "—"}
+          </span>
+          <span className="search-parse-echo__item">
+            <em className="muted">未识别片段</em>
+            {searchPlanEcho.unparsedTerms.length ? searchPlanEcho.unparsedTerms.join("、") : "—"}
+          </span>
         </div>
       )}
       {filtersOpen && (
@@ -382,6 +528,7 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
             <label>公司<input aria-label="公司" placeholder="匹配全部工作经历" value={searchFilterDraft.company} onChange={(e) => onSearchFilterChange({ ...searchFilterDraft, company: e.target.value })} /></label>
             <label>职位<input aria-label="职位" placeholder="匹配全部工作经历" value={searchFilterDraft.title} onChange={(e) => onSearchFilterChange({ ...searchFilterDraft, title: e.target.value })} /></label>
             <label>学校<input aria-label="学校" placeholder="学校或教育经历" value={searchFilterDraft.school} onChange={(e) => onSearchFilterChange({ ...searchFilterDraft, school: e.target.value })} /></label>
+            <label>沟通文本<input aria-label="沟通文本" placeholder="备注子串，如：沟通主动" value={searchFilterDraft.communicationNote} onChange={(e) => onSearchFilterChange({ ...searchFilterDraft, communicationNote: e.target.value })} /></label>
             {/* 级联下拉：一级选大类，二级在该大类右侧弹出。 */}
             <label>职业方向
               <CareerDirectionFilter
@@ -533,6 +680,18 @@ export function TalentPoolPage(props: TalentPoolPageProps) {
           <div className="empty-state">
             <strong>没有符合条件的候选人</strong>
             <p>可调整搜索词或筛选条件后重试。</p>
+            {inferredConditions.length > 0 ? (
+              <p className="empty-state__hint">
+                可能是解析误判：
+                {inferredConditions
+                  .map((condition) => `${CONDITION_LABELS[condition.field] ?? condition.field} ${condition.value}`)
+                  .join("、")}
+                是推断出来的条件。
+                <Button type="button" variant="secondary" onClick={onDropInferredConditions}>
+                  去掉推断条件重搜
+                </Button>
+              </p>
+            ) : null}
           </div>
         ) : candidates.length > 0 ? (
           <>

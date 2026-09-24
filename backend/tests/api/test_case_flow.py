@@ -119,6 +119,43 @@ def test_case_full_pipeline_via_api(app, tmp_path: Path) -> None:
         assert by_jd.json()[0]["offer_total"] == 1
 
 
+def test_deleting_jd_keeps_case_with_snapshot(app) -> None:
+    """岗位物理删除后流程保留：jd_id 置空、岗位信息回落快照，列表与详情都仍可读。"""
+    with TestClient(app) as client:
+        services = app.state.services
+        with services.session_factory() as session:
+            candidate = Candidate(display_name="张三")
+            session.add(candidate)
+            session.commit()
+            candidate_id = candidate.id
+
+        jd_id = _seed_jd(client)
+        created = client.post(
+            "/api/case",
+            json={"candidate_id": candidate_id, "jd_id": jd_id},
+            headers=_headers(),
+        )
+        case_id = created.json()["id"]
+
+        deleted = client.delete(f"/api/jd/{jd_id}", headers=_headers())
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+
+        listed = client.get("/api/case", headers=_headers())
+        assert listed.status_code == 200
+        items = listed.json()["items"]
+        assert [item["id"] for item in items] == [case_id]
+        assert items[0]["jd_id"] is None
+        assert items[0]["jd_deleted"] is True
+        assert items[0]["jd_title"] == "Java 后端"
+        assert items[0]["company"] == "某公司"
+
+        detail = client.get(f"/api/case/{case_id}", headers=_headers())
+        assert detail.status_code == 200
+        assert detail.json()["jd_deleted"] is True
+        assert detail.json()["stage"] == "待评估"
+
+
 def test_dashboard_trend_and_export_endpoints(app, tmp_path: Path) -> None:
     with TestClient(app) as client:
         services = app.state.services

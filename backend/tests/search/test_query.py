@@ -216,6 +216,43 @@ def test_explicit_residence_still_produces_location() -> None:
     assert parsed.filters.location == "北京"
 
 
+# --- 城市词典扩容（2026-09-21）：地级市 + 组合写法 ---
+
+
+def test_prefecture_level_city_is_parsed_as_location() -> None:
+    parsed = parse_query("佛山 后端")
+    assert parsed.filters.location == "佛山"
+    assert "佛山" not in parsed.keywords
+
+
+def test_city_group_expands_into_multiple_locations() -> None:
+    parsed = parse_query("北上广深 后端")
+    assert set(parsed.filters.locations) == {"北京", "上海", "广州", "深圳"}
+    assert parsed.filters.location == "北京"
+    assert "北上广深" not in parsed.keywords
+
+
+def test_province_prefix_and_city_suffix_are_stripped_together() -> None:
+    """「广东省深圳市」要一次吃掉省级前缀与「市」后缀，不能留下「广东省」「市」这类垃圾词条。"""
+    parsed = parse_query("现居广东省深圳市 算法")
+    assert parsed.filters.location == "深圳"
+    assert parsed.keywords == "算法"
+
+
+def test_district_only_writing_is_not_a_location_condition() -> None:
+    """「朝阳区」语义不确定（北京朝阳 / 辽宁朝阳），不产生地点条件，原词留在词条里。"""
+    parsed = parse_query("朝阳区 算法工程师")
+    assert parsed.filters.location is None
+    assert parsed.filters.locations == ()
+    assert "朝阳区" in parsed.keywords
+
+
+def test_school_entity_with_province_name_is_preserved() -> None:
+    parsed = parse_query("广东外语外贸大学 英语")
+    assert parsed.filters.location is None
+    assert "广东外语外贸大学" in parsed.keywords
+
+
 # --- Task 2：排除对象不能被静默忽略 ---
 
 

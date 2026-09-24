@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
+from kerui_recruit.providers.profile_pair import repaired_profile_view
 from kerui_recruit.db.models import (
     Candidate,
     CandidateContact,
@@ -23,13 +24,14 @@ from kerui_recruit.resumes.normalize import normalize_gender
 from kerui_recruit.schools.reference import SchoolReference
 from kerui_recruit.search.contracts import CandidateFilters, resolve_search_status
 from kerui_recruit.search.degrees import normalize_degree
-from kerui_recruit.search.query import has_skill, parse_query
+from kerui_recruit.search.parse import PARSE_TIMEOUT_SECONDS
+from kerui_recruit.search.query import ParsedQuery, has_skill, parse_query
 from kerui_recruit.search.review import (
     describe_conditions,
     query_fingerprint,
     review_base_key,
 )
-from kerui_recruit.search.service import _blocking
+from kerui_recruit.search.service import RELAXABLE_FIELDS, _blocking
 from kerui_recruit.tasks.repository import TaskSpec
 
 
@@ -53,8 +55,10 @@ class CandidateFiltersRequest(BaseModel):
     exclude_skills: list[str] = Field(default_factory=list)
     phone: str | None = None
     gender: str | None = None
+    communication_note: str | None = None
     name: str | None = None
     company: str | None = None
+    companies: list[str] = Field(default_factory=list)  # 多值公司（OR），与面板手选同义
     title: str | None = None
     school: str | None = None
     direction: str | None = None
@@ -70,7 +74,8 @@ class CandidateSearchRequest(BaseModel):
     mode: str = Field(default="hybrid")
     operator: Literal["smart", "and", "or"] = "smart"
     rewrite_enabled: bool = False
-    search_body: bool = False  # 关键词模式下是否同时检索工作/项目经历正文（仅 mode=keyword 生效）
+    search_body: bool = False  # 是否同时检索工作/项目经历正文：关键词与混合模式含义一致（只影响关键词通道，向量模式无 FTS 通道、不生效）
+    parse_enabled: bool = False  # AI 智能解析：把输入框的自然语言拆成硬条件 + 词条 + 语义查询（默认关闭）
     filters: CandidateFiltersRequest = Field(default_factory=CandidateFiltersRequest)
     limit: int = Field(default=20, ge=1, le=2000)
     offset: int = Field(default=0, ge=0)
@@ -106,6 +111,8 @@ class CandidateSearchItem(BaseModel):
     location: str | None
     qs_rank: int | None = None
     original_filename: str | None = None
+    # 沟通记录：候选人级自由文本，**不在 parsed_data 里**，也不参与画像与索引。
+    communication_note: str | None = None
 
 
 class ParsedConditionView(BaseModel):
@@ -114,13 +121,35 @@ class ParsedConditionView(BaseModel):
     confidence: str
 
 
+class EffectiveConditionView(BaseModel):
+    """**合并后**最终生效的硬条件：与面板手选并列展示，并标明来源。"""
+
+    field: str
+    value: str
+    source: Literal["panel", "llm", "rule"]
+    confidence: str
+
+
 class QueryPlanResponse(BaseModel):
     operator: Literal["smart", "and", "or"]
     rewrite_requested: bool
-    rewrite_status: Literal["disabled", "not_applicable", "success", "unavailable"]
+    # 文档规定的六值枚举：unchanged / rejected 让调用方区分「无需改写」与「被校验拒绝」。
+    rewrite_status: Literal["disabled", "not_applicable", "unchanged", "success", "rejected",
+                            "unavailable"]
     semantic_query: str | None = None
+    # 附加诊断：applied 表示改写向量是否真的参与召回；fallback_reason 只描述技术性原因。
+    rewrite_applied: bool = False
+    rewrite_fallback_reason: Literal["provider_error"] | None = None
     parsed_conditions: list[ParsedConditionView] = Field(default_factory=list)
     retained_keywords: str = ""
+    # AI 解析回显：解析来源、交给 FTS 的词条、未识别残句、以及合并后的最终生效条件。
+    parsed_plan_source: Literal["rule", "llm", "mixed"] = "rule"
+    keyword_terms: str = ""
+    unparsed_terms: list[str] = Field(default_factory=list)
+    effective_conditions: list[EffectiveConditionView] = Field(default_factory=list)
+    # 任务组 8：被判定「硬筛筛空」而退化为软排的条件（字段名）。非空表示这条查询的
+    # 结果里，这些条件只参与打分、不再过滤——界面需要据此说明为什么结果比预期宽。
+    relaxed_conditions: list[str] = Field(default_factory=list)
 
 
 class CandidateSearchResponse(BaseModel):
@@ -132,13 +161,24 @@ class CandidateSearchResponse(BaseModel):
     has_more: bool = False
 
 
+def _search_deadline_budget(retrieval_budget: float, parse_enabled: bool) -> float:
+    """这次搜索请求的总预算：检索一份，**开启 AI 智能解析时再加一份解析预算**。
+
+    共用一份的后果实测过：解析要 10~18 秒（强制思考模型），会把 FTS / embedding / 重排的
+    时间吃光，甚至把自己也拖超时——`PARSE_TIMEOUT_SECONDS = 2.5` 时代就是**每一次解析都超时**、
+    静默回退规则链路。所以解析预算独立，且只在用户主动打开解析时才加。
+    """
+    return retrieval_budget + (PARSE_TIMEOUT_SECONDS if parse_enabled else 0.0)
+
+
 @router.post("/candidates", response_model=CandidateSearchResponse)
 async def search_candidates(
     command: CandidateSearchRequest,
     request: Request,
 ) -> CandidateSearchResponse:
     services: AppServices = request.app.state.services
-    deadline = time.monotonic() + getattr(services.search_service, "search_timeout", 4.5)
+    deadline = time.monotonic() + _search_deadline_budget(
+        getattr(services.search_service, "search_timeout", 4.5), command.parse_enabled)
     query_plan = _query_plan(command)
     # 学校别名快照：查询概念解析与索引文档共用同一套标准名/别名映射（同一 deadline 内完成）。
     try:
@@ -146,8 +186,27 @@ async def search_candidates(
     except Exception:
         school_alias_groups = {}
     parsed = parse_query(command.query, school_alias_groups=school_alias_groups)
-    query_plan = _query_plan(command, parsed)
+    extras: dict = {"source": "rule", "unparsed": (), "llm_fields": set(), "semantic": None}
+    # AI 智能解析（默认关闭）：一次调用拆出 filters + keywords + semantic_query，逐字段校验后覆盖规则值。
+    if command.parse_enabled and getattr(services, "query_parser", None) is not None:
+        plan = await services.query_parser.parse(
+            command.query, school_alias_groups=school_alias_groups, deadline_monotonic=deadline)
+        parsed = ParsedQuery(keywords=plan.keywords, filters=plan.filters,
+                             concepts=plan.concepts, conditions=plan.conditions)
+        extras.update(source=plan.source, unparsed=plan.unparsed_terms,
+                      llm_fields=set(plan.accepted_fields), semantic=plan.semantic_query)
     filters = _merge_filters(parsed.filters, command.filters)
+    explicit_keys = set(command.filters.model_dump(exclude_unset=True))
+    # 任务组 8：只有「AI 解析产出」且「使用者没在面板上重复填写」的条件才允许退化。
+    # 面板手填的值意图明确，筛空就应该显示 0 结果，不能被悄悄放宽。
+    relaxable = tuple(
+        name for name in RELAXABLE_FIELDS
+        if name in extras["llm_fields"] and name not in explicit_keys
+    )
+    # 回显「最终生效条件」：面板显式值优先，其余按 AI 解析 / 规则解析标注来源。
+    extras["effective"] = _effective_conditions(
+        filters, explicit_keys, extras["llm_fields"])
+    query_plan = _query_plan(command, parsed, extras=extras)
     # Reserve a small part of the same budget for checking current SQLite facts.
     remaining = max(0., deadline - time.monotonic())
     # 学校别名解析：查询词与索引使用同一套标准名/别名映射，保证「北大」与「北京大学」一致。
@@ -158,8 +217,8 @@ async def search_candidates(
                 filters = replace(filters, school=canonical)
         except Exception:
             pass
-    # 手机号/性别下沉：先在数据库层缩小候选人集合，再交给索引排序，不受向量召回上限影响。
-    if filters.phone or filters.gender:
+    # 手机号/性别/沟通文本下沉：先在数据库层缩小候选人集合，再交给索引排序，不受向量召回上限影响。
+    if filters.phone or filters.gender or filters.communication_note:
         try:
             ids = await _blocking(_resolve_structural_candidates, services, filters, deadline=deadline)
         except Exception:
@@ -179,8 +238,10 @@ async def search_candidates(
         concepts=parsed.concepts,
         rewrite_enabled=command.rewrite_enabled,
         search_body=command.search_body,
+        semantic_query=extras["semantic"],
+        relaxable_fields=relaxable,
     )
-    plan = _to_response_plan(page.query_plan, parsed) if getattr(page, "query_plan", None) is not None else query_plan
+    plan = _to_response_plan(page.query_plan, parsed, extras=extras) if getattr(page, "query_plan", None) is not None else query_plan
     if not page.items:
         return CandidateSearchResponse(
             items=[], degraded_reasons=list(page.degraded_reasons), empty_reason=page.empty_reason,
@@ -188,7 +249,11 @@ async def search_candidates(
             query_plan=plan,
         )
     try:
-        items, validation_reasons = await _blocking(_hydrate_hits, services, page.items, parsed.keywords, filters, deadline=deadline)
+        # 用**实际生效**的条件做实时校验：若服务层已把某条判为「硬筛筛空」并退化为软排，
+        # 这里必须跟着放宽，否则 `_hydrate_hits` 会把公司/职位再当硬条件执行一遍，
+        # 把刚救回来的结果重新滤成 0。
+        hydrate_filters = page.effective_filters or filters
+        items, validation_reasons = await _blocking(_hydrate_hits, services, page.items, parsed.keywords, hydrate_filters, deadline=deadline)
     except Exception:
         return CandidateSearchResponse(
             items=[], degraded_reasons=list(page.degraded_reasons) + ["LIVE_VALIDATION_UNAVAILABLE"],
@@ -206,23 +271,67 @@ async def search_candidates(
     )
 
 
-def _to_response_plan(plan, parsed=None) -> QueryPlanResponse:
-    """把服务层 QueryPlan（dataclass）映射为 API 响应模型，并合并解析条件。"""
+_PLAN_FIELD_LABELS = {
+    "min_years": "最低年限", "max_years": "最高年限", "min_age": "最低年龄", "max_age": "最高年龄",
+    "highest_degree": "最低学历", "locations": "现居城市", "preferred_locations": "意向城市",
+    "max_qs_rank": "QS 排名", "school_level": "学校等级", "school_region": "属地",
+    "exclude_skills": "排除", "phone": "手机号", "gender": "性别", "name": "姓名",
+    "communication_note": "沟通文本",
+    "company": "公司", "companies": "公司", "title": "职位", "school": "学校",
+    "career_directions": "职业方向", "career_specializations": "职业细分",
+    "business_directions": "业务方向",
+}
+# 不参与条件回显的内部字段：状态默认值、下沉集合、派生/重复字段。
+_PLAN_HIDDEN_FIELDS = frozenset({
+    "candidate_status", "candidate_ids", "evidence_terms", "degree_exact",
+    "specializations", "location", "preferred_location", "direction",
+})
+
+
+def _effective_conditions(filters: CandidateFilters, explicit_keys: set[str],
+                          llm_fields: set[str]) -> list[EffectiveConditionView]:
+    """把**合并后**的最终条件渲染成回显项：面板 > AI 解析 > 规则解析，逐条标来源。"""
+    views: list[EffectiveConditionView] = []
+    for name, value in asdict(filters).items():
+        if name in _PLAN_HIDDEN_FIELDS or value in (None, "", (), []):
+            continue
+        if name not in _PLAN_FIELD_LABELS:
+            continue
+        source = "panel" if name in explicit_keys else ("llm" if name in llm_fields else "rule")
+        rendered = "、".join(str(item) for item in value) if isinstance(value, (tuple, list)) else str(value)
+        views.append(EffectiveConditionView(
+            field=name, value=rendered, source=source,
+            confidence="explicit" if source == "panel" else "inferred",
+        ))
+    return views
+
+
+def _to_response_plan(plan, parsed=None, *, extras: dict | None = None) -> QueryPlanResponse:
+    """把服务层 QueryPlan（dataclass）映射为 API 响应模型，并合并解析条件与解析回显。"""
+    extras = extras or {}
     return QueryPlanResponse(
         operator=plan.operator,
         rewrite_requested=plan.rewrite_requested,
         rewrite_status=plan.rewrite_status,
         semantic_query=plan.semantic_query,
+        rewrite_applied=getattr(plan, "rewrite_applied", False),
+        rewrite_fallback_reason=getattr(plan, "rewrite_fallback_reason", None),
         parsed_conditions=[
             ParsedConditionView(field=c.field, value=c.value, confidence=c.confidence)
             for c in (parsed.conditions if parsed else ())
         ],
         retained_keywords=parsed.keywords if parsed else "",
+        parsed_plan_source=extras.get("source", "rule"),
+        keyword_terms=parsed.keywords if parsed else "",
+        unparsed_terms=list(extras.get("unparsed", ())),
+        effective_conditions=list(extras.get("effective", ())),
+        relaxed_conditions=list(getattr(plan, "relaxed", ())),
     )
 
 
-def _query_plan(command: CandidateSearchRequest, parsed=None) -> QueryPlanResponse:
+def _query_plan(command: CandidateSearchRequest, parsed=None, *, extras: dict | None = None) -> QueryPlanResponse:
     """返回查询计划；服务层未回传 plan（如纯筛选提前返回）时的静态兜底。"""
+    extras = extras or {}
     rewrite_status = "not_applicable" if command.mode == "keyword" else "disabled"
     return QueryPlanResponse(
         operator=command.operator,
@@ -234,6 +343,10 @@ def _query_plan(command: CandidateSearchRequest, parsed=None) -> QueryPlanRespon
             for c in (parsed.conditions if parsed else ())
         ],
         retained_keywords=parsed.keywords if parsed else "",
+        parsed_plan_source=extras.get("source", "rule"),
+        keyword_terms=parsed.keywords if parsed else "",
+        unparsed_terms=list(extras.get("unparsed", ())),
+        effective_conditions=list(extras.get("effective", ())),
     )
 
 
@@ -252,8 +365,17 @@ def _resolve_school_query(services, keyword: str) -> str:
     return keyword
 
 
+def _like_escape(value: str) -> str:
+    """转义 LIKE 通配符：反斜杠必须最先转义，否则会把后面补的转义符再转一次。
+
+    用户输入里的 `%` / `_` 是普通字符，不转义就会被 SQL LIKE 当成通配符——
+    例如输入 `%` 会变成「匹配所有人」，完全违背精确筛选的意图。
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_structural_candidates(services, filters) -> set[str] | None:
-    """手机号/性别在数据库层解析出匹配候选人集合，供索引缩小范围。"""
+    """手机号/性别/沟通文本在数据库层解析出匹配候选人集合，供索引缩小范围。"""
     with services.session_factory() as session:
         ids: set[str] | None = None
         if filters.phone:
@@ -281,6 +403,17 @@ def _resolve_structural_candidates(services, filters) -> set[str] | None:
                 if normalize_gender((parsed or {}).get("gender")) == target:
                     gender_ids.add(candidate_id)
             ids = gender_ids if ids is None else (ids & gender_ids)
+        # 沟通文本：子串匹配（大小写不敏感）。空白输入视为没有该条件，避免退化成
+        # 「匹配所有备注非空的人」；多个条件之间仍是交集，语义与 phone/gender 一致。
+        note_keyword = (filters.communication_note or "").strip()
+        if note_keyword:
+            note_ids = set(session.scalars(
+                select(Candidate.id)
+                .where(Candidate.deleted_at.is_(None),
+                       Candidate.communication_note.ilike(
+                           f"%{_like_escape(note_keyword)}%", escape="\\"))
+            ).all())
+            ids = note_ids if ids is None else (ids & note_ids)
     return ids
 
 
@@ -357,6 +490,11 @@ def _hydrate_hits(services, hits, query, filters):
                 parsed_gender = normalize_gender((revision.parsed_data or {}).get("gender"))
                 if parsed_gender != normalize_gender(filters.gender):
                     continue
+            # 沟通文本：索引投影不是事实来源，`candidate_ids` 只缩小了范围，最终仍要按当前
+            # SQLite 里的备注复核（与 phone/gender 同理）。空白输入等价于没有该条件。
+            note_keyword = (filters.communication_note or "").strip()
+            if note_keyword and not _field_contains(candidate.communication_note, note_keyword):
+                continue
             parsed = revision.parsed_data or {}
             if filters.name and not _field_contains(candidate.display_name, filters.name):
                 continue
@@ -375,10 +513,13 @@ def _hydrate_hits(services, hits, query, filters):
                 continue
             items.append(CandidateSearchItem(
                 candidate_id=candidate.id, revision_id=revision.id, name=candidate.display_name,
-                phone=phone, reasons=_build_reasons(query, hit), parsed_data=revision.parsed_data,
+                phone=phone, reasons=_build_reasons(query, hit),
+                # 展示视图：历史遗留的碎片分点在读取时按整体段落重算（不写库）。
+                parsed_data=repaired_profile_view(revision.parsed_data),
                 content=hit.content, score=hit.score, matched_channels=hit.matched_channels,
                 total_years=hit.total_years, highest_degree=hit.highest_degree, location=hit.location,
-                qs_rank=hit.qs_rank, original_filename=revision.original_filename))
+                qs_rank=hit.qs_rank, original_filename=revision.original_filename,
+                communication_note=candidate.communication_note))
     return items, degraded
 
 
@@ -415,10 +556,15 @@ def _school_contains(parsed: dict, keyword: str) -> bool:
 
 
 def _build_reasons(query: str, hit) -> list[str]:
+    """命中理由：通道、**已选证据**里的关键词命中（含片段原始 kind）、背景事实。
+
+    命中依据只从 `hit.evidence` 生成，不再对 `hit.content` 做字符串包含判断 ——
+    `content` 固定是 parent 概况，查询词只出现在 child 片段时也必须能给出依据。
+    """
     reasons: list[str] = []
     if hit.matched_channels:
         reasons.append("匹配通道：" + "、".join(hit.matched_channels))
-    terms = [term for term in query.split() if term and term in hit.content]
+    terms = _evidence_terms(query, hit)
     if terms:
         reasons.append("关键词命中：" + "、".join(terms[:3]))
     facts = []
@@ -431,6 +577,17 @@ def _build_reasons(query: str, hit) -> list[str]:
     if facts:
         reasons.append("背景：" + "、".join(facts))
     return reasons[:3]
+
+
+def _evidence_terms(query: str, hit) -> list[str]:
+    """查询词在已选证据里首次命中的位置：返回 ``词（原始 kind）``，按查询顺序去重。"""
+    evidence = tuple(getattr(hit, "evidence", ()) or ())
+    matched: list[str] = []
+    for term in dict.fromkeys(t for t in query.split() if t):
+        chunk = next((item for item in evidence if term in item.text), None)
+        if chunk is not None:
+            matched.append(f"{term}（{chunk.kind}）")
+    return matched
 
 
 def _merge_filters(parsed: CandidateFilters, explicit: CandidateFiltersRequest | CandidateFilters) -> CandidateFilters:
@@ -450,7 +607,7 @@ def _merge_filters(parsed: CandidateFilters, explicit: CandidateFiltersRequest |
         merged["degree_exact"] = False
     merged.update(overrides)
     for key in ("locations", "preferred_locations", "exclude_skills", "specializations",
-                "career_directions", "career_specializations", "business_directions"):
+                "career_directions", "career_specializations", "business_directions", "companies"):
         merged[key] = tuple(merged[key] or ())
     return CandidateFilters(**merged)
 

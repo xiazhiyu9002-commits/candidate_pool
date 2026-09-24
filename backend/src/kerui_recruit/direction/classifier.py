@@ -18,6 +18,7 @@ from kerui_recruit.direction.policy import (
     SPECIALIZATION_PARENT,
     DirectionDecision,
 )
+from kerui_recruit.resumes.tenure import parse_month as _parse_month
 
 # 细分专长证据关键词（casefold 后按词边界/子串匹配）。
 _SPEC_TERMS: dict[str, tuple[str, ...]] = {
@@ -182,17 +183,6 @@ def _business_scores(text: str) -> list[tuple[int, str]]:
     return sorted((item for item in ranked if item[0] > 0), key=lambda item: (-item[0], item[1]))
 
 
-_DATE_RE = re.compile(r"(\d{4})\s*[.\-/年]?\s*(\d{1,2})?")
-
-
-def _parse_month(value: str) -> int | None:
-    """把 ``2020.07`` / ``2020-7`` / ``2020年7月`` / ``2020`` 解析为年*12+月的序数。"""
-    match = _DATE_RE.search(value or "")
-    if not match:
-        return None
-    return int(match.group(1)) * 12 + int(match.group(2) or 1) - 1
-
-
 def _is_present(end_text: str) -> bool:
     folded = (end_text or "").casefold()
     return not folded or any(marker in folded for marker in ("至今", "present", "now", "当前"))
@@ -343,6 +333,21 @@ _DUTY_WEIGHT = 50
 _PROJECT_WEIGHT = 30
 _TITLE_WEIGHT = 10
 _SKILL_WEIGHT = 10
+
+
+def direction_codes_from_text(text: str) -> set[str]:
+    """查询侧方向枚举反查：与简历侧判定共用同一套词表（_TERMS / _SPEC_TERMS / _BUSINESS_TERMS）。
+
+    用于 LLM 解析的交叉验证：LLM 选出的 code 必须能被同一套词表印证，否则只在
+    与枚举标签精确一致时才采用（拦住幻觉 code）。
+    """
+    folded = _fold(str(text or ""))
+    if not folded:
+        return set()
+    codes = {code for code, terms in _TERMS.items() if _has_any(folded, terms)}
+    codes |= {code for code, terms in _SPEC_TERMS.items() if _has_any(folded, terms)}
+    codes |= {code for code, terms in _BUSINESS_TERMS.items() if _has_any(folded, terms)}
+    return codes
 
 
 def _fold(text: str) -> str:

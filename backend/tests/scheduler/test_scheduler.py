@@ -162,3 +162,116 @@ async def test_scheduler_blocking_integrations_do_not_stall_event_loop(session_f
     with pytest.raises(asyncio.CancelledError):
         await running
     timer.cancel()
+
+
+class _CountingSoftDelete:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def purge_expired(self) -> int:
+        self.calls += 1
+        return 0
+
+
+def test_purge_soft_deleted_tick_runs_at_most_once_per_day(session_factory) -> None:
+    """回收站过期清理挂在 5 分钟轮询上，靠日期去重避免反复全表扫描。"""
+    soft_delete = _CountingSoftDelete()
+    scheduler = SchedulerService(
+        session_factory=session_factory,
+        match_service=None,
+        reminder_service=None,
+        soft_delete_service=soft_delete,
+    )
+
+    scheduler.purge_soft_deleted_tick()
+    scheduler.purge_soft_deleted_tick()
+    assert soft_delete.calls == 1
+
+
+def test_purge_soft_deleted_tick_is_noop_without_service(session_factory) -> None:
+    SchedulerService(
+        session_factory=session_factory, match_service=None, reminder_service=None
+    ).purge_soft_deleted_tick()
+
+
+@pytest.mark.asyncio
+async def test_run_forever_triggers_purge_tick(session_factory) -> None:
+    """清理必须真的挂在调度循环上——此前 purge_expired 全仓零调用点。"""
+    started = threading.Event()
+
+    class SoftDelete(_CountingSoftDelete):
+        def purge_expired(self) -> int:
+            started.set()
+            return super().purge_expired()
+
+    scheduler = SchedulerService(
+        session_factory=session_factory,
+        match_service=None,
+        reminder_service=None,
+        soft_delete_service=SoftDelete(),
+    )
+    running = asyncio.create_task(scheduler.run_forever(interval_seconds=60))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+
+class _CountingRollover:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.days: list = []
+
+    def refresh(self, today=None) -> dict:
+        self.calls += 1
+        self.days.append(today)
+        return {"date": "2026-01-05", "scanned": 1, "updated": 1, "candidates": 1}
+
+
+def test_refresh_work_years_tick_runs_at_most_once_per_day(session_factory) -> None:
+    """年限/年龄刷新挂在 5 分钟轮询上，靠日期去重；值未变时本就无写入。"""
+    rollover = _CountingRollover()
+    scheduler = SchedulerService(
+        session_factory=session_factory,
+        match_service=None,
+        reminder_service=None,
+        work_years_rollover=rollover,
+    )
+
+    scheduler.refresh_work_years_tick()
+    scheduler.refresh_work_years_tick()
+
+    assert rollover.calls == 1
+
+
+def test_refresh_work_years_tick_is_noop_without_rollover(session_factory) -> None:
+    SchedulerService(
+        session_factory=session_factory, match_service=None, reminder_service=None
+    ).refresh_work_years_tick()
+
+
+@pytest.mark.asyncio
+async def test_run_forever_triggers_work_years_tick(session_factory) -> None:
+    """年限滚动必须真的挂在调度循环上，否则年限永远不会增长。"""
+    started = threading.Event()
+
+    class Rollover(_CountingRollover):
+        def refresh(self, today=None) -> dict:
+            started.set()
+            return super().refresh(today)
+
+    scheduler = SchedulerService(
+        session_factory=session_factory,
+        match_service=None,
+        reminder_service=None,
+        work_years_rollover=Rollover(),
+    )
+    running = asyncio.create_task(scheduler.run_forever(interval_seconds=60))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running

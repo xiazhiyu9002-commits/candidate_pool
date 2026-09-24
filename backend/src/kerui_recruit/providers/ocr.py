@@ -24,17 +24,38 @@ _MAX_PAGES = 50
 # 单个页面识别超时；每页独立控制，避免长文档无限占用。
 _PAGE_TIMEOUT_SECONDS = 120.0
 
+# 单页图像的最长边上限。实测 A4 页面在 DPI 200 下是 1654x2339、PNG 单页 300~600KB，
+# 多页拼进一条消息后很容易顶到上游的「图片过大 / 请求超出限制」而被整份拒掉
+# （表现为 E_API_INPUT：请求超出限制或格式不支持）。1568 是视觉模型常用的最优边长上限。
+_MAX_IMAGE_EDGE = 1568
+_JPEG_QUALITY = 85
+# PDF 栅格化后的统一编码。调用方拼 data URL 时必须引用本常量，不要写死。
+# 同样的页在 JPEG@1568 下体积约为 PNG@200 的一半，且边长落在通用上限内。
+RASTER_IMAGE_MIME = "image/jpeg"
+
+
+def _render_page(page: "pymupdf.Page", dpi: int, max_edge: int) -> bytes:
+    """把一页渲染为 JPEG，并保证最长边不超过 ``max_edge``。"""
+    scale = dpi / 72.0
+    longest = max(page.rect.width, page.rect.height)
+    if longest > 0:
+        scale = min(scale, max_edge / longest)
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale))
+    return pixmap.tobytes("jpg", jpg_quality=_JPEG_QUALITY)
+
 
 def rasterize_pdf(
     content: bytes,
     *,
     page_indexes: list[int] | None = None,
     dpi: int = _DEFAULT_DPI,
+    max_edge: int = _MAX_IMAGE_EDGE,
 ) -> list[tuple[int, bytes]]:
-    """把 PDF 的指定页面渲染为 PNG，返回 (页码, 图片字节) 列表。
+    """把 PDF 的指定页面渲染为 JPEG，返回 (页码, 图片字节) 列表。
 
     未指定 ``page_indexes`` 时渲染全部页面；页数受 ``_MAX_PAGES`` 上限约束，
     超出部分直接忽略，避免异常大的文档被无限制地调用模型。
+    每页最长边受 ``max_edge`` 约束，保证单条消息里的图片总量可控。
     """
     images: list[tuple[int, bytes]] = []
     with pymupdf.open(stream=io.BytesIO(content), filetype="pdf") as document:
@@ -44,8 +65,7 @@ def rasterize_pdf(
                 continue
             if len(images) >= _MAX_PAGES:
                 break
-            page = document[index]
-            images.append((index, page.get_pixmap(dpi=dpi).tobytes("png")))
+            images.append((index, _render_page(document[index], dpi, max_edge)))
     return images
 
 
@@ -85,7 +105,7 @@ class OpenAICompatibleOCRProvider:
     async def _extract_image(self, image: bytes, filename: str) -> str:
         mime = _mime_for(filename)
         if mime == "application/pdf":
-            mime = "image/png"
+            mime = RASTER_IMAGE_MIME
         data_url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
         try:
             text = await self._llm.complete_text(

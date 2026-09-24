@@ -70,6 +70,27 @@ def test_fresh_grad_without_experience_passes() -> None:
     assert result.ok is True
 
 
+def test_mock_structured_payload_passes_validity_check() -> None:
+    """e2e 的 mock 结构化输出必须自身能过完整性校验，且能同时喂岗位 schema。
+
+    mock 是 e2e 里唯一的结构化数据来源；一旦退化成 `{"ok": true}` 这类空壳，
+    导入的简历会被判「不合格」（`E_PARSE_INCOMPLETE`），修订停在 FAILED、入不了索引，
+    「导入 → 解析 → 入索引 → 检索」整条链路就静默失去覆盖（实测过）。
+    """
+    from kerui_recruit.jd.structured import ParsedJd
+    from kerui_recruit.runtime import _mock_structured_payload
+
+    payload = _mock_structured_payload()
+
+    resume = ParsedResume.model_validate(payload)
+    verdict = check_parsed_resume(resume, "")
+    assert verdict.ok is True, verdict.reason
+
+    jd = ParsedJd.model_validate(payload)
+    assert jd.title, "岗位 title 缺失会让修订推不到 READY"
+    assert jd.required_skills
+
+
 def test_anonymous_resume_with_experience_passes() -> None:
     parsed = ParsedResume(
         skills=["Java"],

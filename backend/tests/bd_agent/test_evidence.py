@@ -5,6 +5,7 @@ import pytest
 from kerui_recruit.bd_agent.evidence import (
     EvidenceDoc,
     EvidenceExtractor,
+    RankedChunk,
     _chunk_text,
     source_quality,
 )
@@ -23,7 +24,9 @@ def test_source_quality_classifies_sources() -> None:
     assert source_quality("https://www.zhihu.com/question/1") == 0.0
     assert source_quality("https://www.163.com/news/1") == 0.0
     assert source_quality("https://jobs.bytedance.com/careers/1") == 0.8
-    assert source_quality("https://example.com/page") == 0.5
+    # 中性站点压到 0.2：排序先看来源质量、再看重排顺序，而 top-10 是所有来源共用的名额，
+    # 中性站点排在前面就会把官网(0.8)的片段挤出去。
+    assert source_quality("https://example.com/page") == 0.2
 
 
 @pytest.mark.asyncio
@@ -62,6 +65,33 @@ async def test_extract_prefers_high_quality_sources() -> None:
     extractor = EvidenceExtractor(reranker=None, top_k=5)
     chunks = await extractor.extract("q", docs)
     assert chunks[0].source_url == "https://www.zhipin.com/job/1"
+
+
+@pytest.mark.asyncio
+async def test_extract_keeps_page_title_on_chunks() -> None:
+    """标题必须随 chunk 一起流到综合环节。
+
+    招聘站正文通常只有岗位职责，雇主名在页面标题里（「XX科技招聘算法工程师-北京-BOSS直聘」）。
+    早先这里把 title 丢掉，公司名因此无从提取，线索大批落成「未识别公司」。
+    """
+    docs = [
+        EvidenceDoc(
+            source_url="https://www.zhipin.com/job/1",
+            title="XX科技招聘算法工程师-北京",
+            content="负责推荐系统召回。",
+        )
+    ]
+    extractor = EvidenceExtractor(reranker=None, top_k=5)
+    chunks = await extractor.extract("q", docs)
+    assert chunks
+    assert chunks[0].title == "XX科技招聘算法工程师-北京"
+
+
+def test_ranked_chunk_title_is_optional_and_appended_last() -> None:
+    """title 有默认值且排在 score 之后：既有按位置构造的调用不受影响。"""
+    chunk = RankedChunk("正文", "https://a.com", 0.5)
+    assert chunk.title is None
+    assert chunk.score == 0.5
 
 
 @pytest.mark.asyncio

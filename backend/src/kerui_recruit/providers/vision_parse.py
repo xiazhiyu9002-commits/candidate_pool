@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import base64
 import logging
+from typing import Any
 
-import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from kerui_recruit.jd.structured import ParsedJd
-from kerui_recruit.providers.errors import ProviderError, map_http_error
+from kerui_recruit.providers.errors import ProviderError
 from kerui_recruit.providers.generation_tasks import (
     render_jd_vision_parse_prompt,
     render_resume_vision_parse_prompt,
 )
-from kerui_recruit.providers.ocr import rasterize_pdf
+from kerui_recruit.providers.ocr import RASTER_IMAGE_MIME, rasterize_pdf
 from kerui_recruit.resumes.structured import ParsedResume
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,11 @@ _IMAGE_MIME = {
     ".bmp": "image/bmp",
 }
 
-_PAGE_TIMEOUT_SECONDS = 300.0
+# 单条视觉请求最多携带的页数。
+# 图片本身已按 `_MAX_IMAGE_EDGE` 压过（JPEG@1568，单页约 250KB），但一份扫描件可能有几十页，
+# 全塞进一条消息仍会被上游按「请求超出限制 / 图片过大」整份拒掉（E_API_INPUT）。
+# 超出的页拆成多批分别解析，结果在本地合并；4 页以内（绝大多数简历）仍然只发一次请求。
+_MAX_PAGES_PER_CALL = 4
 
 
 def _mime_for(filename: str) -> str:
@@ -78,10 +82,31 @@ class VisionStructuredParser:
         response_model: type,
     ):
         images = self._rasterize(content, filename)
+        if not images:
+            raise ProviderError(
+                code="E_VISION_EMPTY",
+                retryable=False,
+                user_message="文档没有可解析的页面",
+            )
+        batches = [
+            images[start : start + _MAX_PAGES_PER_CALL]
+            for start in range(0, len(images), _MAX_PAGES_PER_CALL)
+        ]
+        parts = [
+            await self._complete_batch(prompt, filename, batch, response_model)
+            for batch in batches
+        ]
+        return parts[0] if len(parts) == 1 else _merge_structured(parts)
+
+    async def _complete_batch(
+        self,
+        prompt: str,
+        filename: str,
+        images: list[tuple[int, bytes]],
+        response_model: type,
+    ):
         parts: list[dict] = [{"type": "text", "text": prompt}]
-        mime = _mime_for(filename)
-        if mime == "application/pdf":
-            mime = "image/png"
+        mime = _data_url_mime(filename)
         for _, image in images:
             data_url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
             parts.append({"type": "image_url", "image_url": {"url": data_url}})
@@ -94,6 +119,30 @@ class VisionStructuredParser:
             raise ProviderError(
                 code="E_VISION_SCHEMA", retryable=True, user_message="视觉解析结果不符合结构要求",
             ) from error
+
+
+def _data_url_mime(filename: str) -> str:
+    """data URL 的 mime：PDF 已被栅格化为 ``RASTER_IMAGE_MIME``，其余按原扩展名。"""
+    mime = _mime_for(filename)
+    return RASTER_IMAGE_MIME if mime == "application/pdf" else mime
+
+
+def _merge_structured(parts: list[BaseModel]) -> Any:
+    """把分批解析出的同一份文档合并成一个结果。
+
+    列表字段（工作经历/项目/教育/技能等）按批序拼接并去重；标量字段取第一个非空值——
+    抬头信息（姓名、年限、学历、当前公司）通常出现在第一批里。
+    """
+    merged: dict[str, Any] = {}
+    for part in parts:
+        for name, value in part.model_dump().items():
+            current = merged.get(name)
+            if isinstance(value, list):
+                existing = current if isinstance(current, list) else []
+                merged[name] = existing + [item for item in value if item not in existing]
+            elif current in (None, "", [], {}):
+                merged[name] = value
+    return type(parts[0]).model_validate(merged)
 
 
 def _extract_json(text: str) -> str:

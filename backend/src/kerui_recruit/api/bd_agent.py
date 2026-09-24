@@ -51,6 +51,9 @@ class AgentLeadResponse(BaseModel):
 class AgentQueryResponse(BaseModel):
     session_id: str
     leads: list[AgentLeadResponse]
+    # 非空表示这一轮被降级/失败（例如线索综合超时或模型不可用）。
+    # 前端据此把「确实没搜到」和「这一步失败了」分开显示。
+    degraded_reason: str | None = None
 
 
 @router.post("/query", response_model=AgentQueryResponse)
@@ -61,7 +64,9 @@ async def run_agent(
     result = await services.bd_agent.run(
         command.query, kind=command.kind, limit=command.limit
     )
-    return _to_response(result.session_id, result.leads, services)
+    return _to_response(
+        result.session_id, result.leads, services, result.degraded_reason
+    )
 
 
 def _sse(event: str, data: dict) -> str:
@@ -93,10 +98,24 @@ async def query_stream(
                 item = await queue.get()
                 if isinstance(item, tuple):
                     response = _to_response(
-                        item[1].session_id, item[1].leads, services
+                        item[1].session_id,
+                        item[1].leads,
+                        services,
+                        item[1].degraded_reason,
                     )
                     yield _sse("result", {"type": "result", **response.model_dump()})
                     break
+                if item.get("stage") == "leads":
+                    # 每轮综合完就推一批已入库线索，前端不必等整批结束才渲染。
+                    leads = [
+                        _lead_response(lead, services)
+                        for lead in item.get("leads") or []
+                    ]
+                    yield _sse("leads", {
+                        "type": "leads",
+                        "leads": [lead.model_dump() for lead in leads],
+                    })
+                    continue
                 yield _sse("progress", {"type": "progress", **item})
         finally:
             await task
@@ -114,7 +133,9 @@ async def follow_up(
 ) -> AgentQueryResponse:
     services: AppServices = request.app.state.services
     result = await services.bd_agent.follow_up(session_id, command.query, limit=command.limit)
-    return _to_response(result.session_id, result.leads, services)
+    return _to_response(
+        result.session_id, result.leads, services, result.degraded_reason
+    )
 
 
 @router.get("/session/{session_id}/export")
@@ -131,32 +152,37 @@ def export_report(session_id: str, request: Request) -> Response:
 
 
 def _to_response(
-    session_id: str, leads: list[BdLead], services: AppServices
+    session_id: str,
+    leads: list[BdLead],
+    services: AppServices,
+    degraded_reason: str | None = None,
 ) -> AgentQueryResponse:
-    encryption = services.encryption_service
     return AgentQueryResponse(
         session_id=session_id,
-        leads=[
-            AgentLeadResponse(
-                id=lead.id,
-                source=lead.source,
-                company_name=encryption.decrypt(lead.company_name),
-                job_title=(
-                    encryption.decrypt(lead.job_title) if lead.job_title else None
-                ),
-                posted_time=lead.posted_time,
-                salary_range=lead.salary_range,
-                level=lead.level,
-                requirements=lead.requirements or [],
-                summary=lead.raw_snippet,
-                url=lead.url,
-                status=lead.status,
-                confidence=lead.confidence,
-                is_hiring=lead.is_hiring,
-                evidence=_evidence_items(lead),
-            )
-            for lead in leads
-        ],
+        leads=[_lead_response(lead, services) for lead in leads],
+        degraded_reason=degraded_reason,
+    )
+
+
+def _lead_response(lead: BdLead, services: AppServices) -> AgentLeadResponse:
+    encryption = services.encryption_service
+    return AgentLeadResponse(
+        id=lead.id,
+        source=lead.source,
+        company_name=encryption.decrypt(lead.company_name),
+        job_title=(
+            encryption.decrypt(lead.job_title) if lead.job_title else None
+        ),
+        posted_time=lead.posted_time,
+        salary_range=lead.salary_range,
+        level=lead.level,
+        requirements=lead.requirements or [],
+        summary=lead.raw_snippet,
+        url=lead.url,
+        status=lead.status,
+        confidence=lead.confidence,
+        is_hiring=lead.is_hiring,
+        evidence=_evidence_items(lead),
     )
 
 

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 8,
   "default_provider_id": "deepseek",
   "providers": {
     "deepseek": {
@@ -107,7 +107,17 @@
       "models": {
         "kimi-for-coding": {
           "model_id": "kimi-for-coding",
-          "roles": ["fast_text", "reasoning_text"],
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "k3": {
+          "model_id": "k3",
+          "roles": ["reasoning_text", "vision"],
           "supported_reasoning_modes": ["auto", "required"],
           "supported_reasoning_efforts": ["low", "high", "max"],
           "supports_json_schema": true,
@@ -118,11 +128,12 @@
       },
       "recommended_models": {
         "fast_text": "kimi-for-coding",
-        "reasoning_text": "kimi-for-coding"
+        "reasoning_text": "k3",
+        "vision": "k3"
       },
       "help_url": "https://www.kimi.com/code/docs/",
       "key_help_url": "https://www.kimi.com/code/docs/",
-      "subscription_warning": "订阅版受会员额度与并发频率限制，后台批量解析可能触发限流；大批量任务建议使用 Kimi 开放平台。",
+      "subscription_warning": "订阅版受会员额度与并发频率限制，后台批量解析可能触发限流；大批量任务建议使用 Kimi 开放平台。另注意：订阅端点用的是自己的模型 ID（k3），与开放平台的 kimi-k3 并非同一个名字，能力档案也可能不同；本项目只在开放平台做过实测，订阅端点的可用性请以自己的检测结果为准。",
       "deprecated": false
     },
     "qwen": {
@@ -163,6 +174,54 @@
       "subscription_warning": null,
       "deprecated": false
     },
+    "qwen_code": {
+      "provider_id": "qwen_code",
+      "label": "阿里百炼 Coding Plan",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "parameter_style": "qwen",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "qwen3.8-flash": {
+          "model_id": "qwen3.8-flash",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "qwen3.8-max": {
+          "model_id": "qwen3.8-max",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "qwen3.7-plus": {
+          "model_id": "qwen3.7-plus",
+          "roles": ["fast_text", "reasoning_text", "vision"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "qwen3.8-flash",
+        "reasoning_text": "qwen3.8-max",
+        "vision": "qwen3.8-flash"
+      },
+      "help_url": "https://help.aliyun.com/zh/model-studio/coding-plan",
+      "key_help_url": "https://help.aliyun.com/zh/model-studio/coding-plan",
+      "subscription_warning": "阿里云百炼 Coding Plan 仅限在官方编程工具内使用，禁止以 API 调用形式用于自动化脚本、应用后端或非交互式批量场景，违规可能导致订阅暂停或 API Key 封禁。套餐 Key（sk-sp- 前缀）与百炼按量计费 Key 不互通，请在订阅页单独获取。另注意：订阅端点用的是自己的模型 ID，与按量计费的 qwen3.8-* 并非同一套名字，能力档案也可能不同；本项目只在按量计费端点做过实测，订阅端点的可用性请以自己的检测结果为准。",
+      "deprecated": false
+    },
     "zhipu": {
       "provider_id": "zhipu",
       "label": "智谱 GLM",
@@ -170,11 +229,11 @@
       "parameter_style": "zhipu",
       "allowed_contexts": ["interactive", "background", "batch"],
       "models": {
-        "glm-4.7-flashx": {
-          "model_id": "glm-4.7-flashx",
-          "roles": ["fast_text"],
-          "supported_reasoning_modes": ["off", "auto"],
-          "supported_reasoning_efforts": ["low", "high"],
+        "glm-5.3-flash": {
+          "model_id": "glm-5.3-flash",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
           "supports_json_schema": true,
           "supports_json_object": true,
           "supports_temperature": true,
@@ -185,6 +244,26 @@
           "roles": ["reasoning_text"],
           "supported_reasoning_modes": ["auto", "required"],
           "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "glm-5.3-flashx": {
+          "model_id": "glm-5.3-flashx",
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "glm-4.7-flashx": {
+          "model_id": "glm-4.7-flashx",
+          "roles": ["fast_text"],
+          "supported_reasoning_modes": ["off", "auto"],
+          "supported_reasoning_efforts": ["low", "high"],
           "supports_json_schema": true,
           "supports_json_object": true,
           "supports_temperature": true,
@@ -202,13 +281,51 @@
         }
       },
       "recommended_models": {
-        "fast_text": "glm-4.7-flashx",
+        "fast_text": "glm-5.3-flashx",
         "reasoning_text": "glm-5.3",
-        "vision": "glm-4v-flash"
+        "vision": "glm-5.3-flash"
       },
       "help_url": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
       "key_help_url": "https://docs.bigmodel.cn/cn/guide/start/apikey",
       "subscription_warning": null,
+      "deprecated": false
+    },
+    "zhipu_code": {
+      "provider_id": "zhipu_code",
+      "label": "智谱 GLM Coding Plan",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "parameter_style": "zhipu",
+      "allowed_contexts": ["interactive", "background", "batch"],
+      "models": {
+        "glm-5.3-flash": {
+          "model_id": "glm-5.3-flash",
+          "roles": ["fast_text", "vision"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        },
+        "glm-5.3": {
+          "model_id": "glm-5.3",
+          "roles": ["reasoning_text"],
+          "supported_reasoning_modes": ["auto", "required"],
+          "supported_reasoning_efforts": ["low", "high", "max"],
+          "supports_json_schema": true,
+          "supports_json_object": true,
+          "supports_temperature": true,
+          "deprecated": false
+        }
+      },
+      "recommended_models": {
+        "fast_text": "glm-5.3-flash",
+        "reasoning_text": "glm-5.3",
+        "vision": "glm-5.3-flash"
+      },
+      "help_url": "https://docs.bigmodel.cn/cn/coding-plan/quick-start",
+      "key_help_url": "https://docs.bigmodel.cn/cn/coding-plan/quick-start",
+      "subscription_warning": "GLM Coding Plan 仅限智谱官方支持的编程工具与产品环境内使用，不得用于自动化脚本、应用后端或批量/非交互式调用，订阅权益范围外的调用可能被限制或停用。套餐 Key 与开放平台其他 Key 不通用，请在个人/团队编程套餐页单独获取。另注意：本项目只在开放平台做过实测，订阅端点的可用性请以自己的检测结果为准。",
       "deprecated": false
     },
     "siliconflow": {

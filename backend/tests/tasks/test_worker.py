@@ -83,6 +83,64 @@ async def test_worker_failure_schedules_a_durable_retry(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_content_level_failure_is_not_retried(tmp_path: Path) -> None:
+    """内容级判定（`E_PARSE_INCOMPLETE`）必须**直接进终态**，不再重试。
+
+    重试的前提是「换个时机可能就好了」。而「这份原文抽不出够用的字段」换多少次时机都一样，
+    只会把同一次模型调用再烧 4 遍并占住 worker；实测 `.dev-data` 里就有 attempts=2
+    还挂在 RETRY_WAIT 的 E_PARSE_INCOMPLETE。
+    """
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    repo = TaskRepository(factory, lease_duration=timedelta(minutes=5))
+    task_id = repo.enqueue(TaskSpec("PARSE", "normal", 10, {}, "parse:one"))
+
+    class _Incomplete(RuntimeError):
+        code = "E_PARSE_INCOMPLETE"
+        user_message = "解析结果不完整，已归为不合格，可重新解析"
+
+    async def handler(payload, report=None):
+        raise _Incomplete("incomplete")
+
+    worker = TaskWorker(repository=repo, worker_id="worker", queues=("normal",),
+                        handlers={"PARSE": handler})
+
+    assert await worker.run_once() is True
+    with factory() as session:
+        task = session.get(TaskRecord, task_id)
+        assert task.status == "DEAD_LETTER"
+        assert task.next_retry_at is None
+        assert task.error_code == "E_PARSE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_provider_outage_is_still_retried(tmp_path: Path) -> None:
+    """供应商侧错误仍要重试 —— 上面那条收的是确定性判定，不是把所有失败都变成终态。"""
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    repo = TaskRepository(factory, lease_duration=timedelta(minutes=5))
+    task_id = repo.enqueue(TaskSpec("PARSE", "normal", 10, {}, "parse:two"))
+
+    class _Outage(RuntimeError):
+        code = "E_AI_ALL_PROVIDERS_FAILED"
+        user_message = "主服务和备用服务当前均不可用"
+
+    async def handler(payload, report=None):
+        raise _Outage("outage")
+
+    worker = TaskWorker(repository=repo, worker_id="worker", queues=("normal",),
+                        handlers={"PARSE": handler})
+
+    assert await worker.run_once() is True
+    with factory() as session:
+        task = session.get(TaskRecord, task_id)
+        assert task.status == "RETRY_WAIT"
+        assert task.next_retry_at is not None
+
+
+@pytest.mark.asyncio
 async def test_running_cancel_stops_handler_without_killing_worker(tmp_path: Path) -> None:
     engine = create_engine_for(tmp_path / "recruit.sqlite3")
     migrate(engine)

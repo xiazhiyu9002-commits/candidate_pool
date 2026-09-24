@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from pydantic import BaseModel
@@ -146,6 +148,34 @@ async def test_json_validation_failure_is_switchable_schema_error():
 
 
 @pytest.mark.asyncio
+async def test_max_tokens_only_sent_when_requested():
+    """输出上界只在调用方显式给了时才发。
+
+    给结构化调用乱设小值会把 JSON 截断成 `E_API_SCHEMA`，比慢更糟；
+    所以默认必须一个字段都不发（保持本改动之前的行为）。
+    """
+    bodies: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAIChatAdapter(
+        base_url="https://example.com", api_key="k", parameter_style="standard",
+        http_client=client, connection_id="c1", provider_id="deepseek",
+    )
+
+    await adapter.generate(text_request(), model="m", profile=profile())
+    assert "max_tokens" not in bodies[0]
+
+    from dataclasses import replace
+
+    await adapter.generate(replace(text_request(), max_tokens=1024), model="m", profile=profile())
+    assert bodies[1]["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
 async def test_http_error_maps_switchable_category():
     adapter = adapter_returning({"error": "busy"}, status=503)
     with pytest.raises(ProviderError) as caught:
@@ -154,6 +184,48 @@ async def test_http_error_maps_switchable_category():
     assert caught.value.category is FailureCategory.SERVER
     assert caught.value.switchable is True
     assert caught.value.provider_id == "deepseek"
+
+
+def adapter_raising(error: Exception) -> OpenAIChatAdapter:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return OpenAIChatAdapter(
+        base_url="https://example.com",
+        api_key="k",
+        parameter_style="zhipu",
+        http_client=client,
+        connection_id="c1",
+        provider_id="zhipu",
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_is_reported_as_timeout_not_network_error():
+    """读超时必须归类为 timeout，不能报成「无法连接 API 服务」。
+
+    `httpx.TimeoutException` 是 `httpx.RequestError` 的子类，两支的捕获顺序写反就会误报。
+    实测智谱 glm-5.3（思考模型）的探测就是这样被报成 `E_API_NETWORK` 的：
+    使用者会去查代理/DNS，而真实原因是供应商太慢。
+    """
+    adapter = adapter_raising(httpx.ReadTimeout("read timed out"))
+    with pytest.raises(ProviderError) as caught:
+        await adapter.generate(text_request(), model="model-one", profile=profile())
+    assert caught.value.code == "E_API_TIMEOUT"
+    assert caught.value.category is FailureCategory.TIMEOUT
+    # 与 HTTP 408 的映射口径一致（`providers/errors.py`）。
+    assert caught.value.user_message == "API 请求超时"
+
+
+@pytest.mark.asyncio
+async def test_connection_error_still_reported_as_network_error():
+    """真正的连接失败仍归 network —— 上面那条修的是归类，不是把所有错误都改叫超时。"""
+    adapter = adapter_raising(httpx.ConnectError("connect failed"))
+    with pytest.raises(ProviderError) as caught:
+        await adapter.generate(text_request(), model="model-one", profile=profile())
+    assert caught.value.code == "E_API_NETWORK"
+    assert caught.value.category is FailureCategory.NETWORK
 
 
 @pytest.mark.asyncio

@@ -103,13 +103,15 @@ def test_other_direction_does_not_block_either_side():
         assert decision.eligibility == "eligible", (jd_value, candidate_value)
 
 
-def test_business_direction_mismatch_is_rejected():
+def test_business_direction_mismatch_is_not_rejected():
+    """业务方向不一致不再淘汰：只回传 business_match=False 供排序分层。"""
     decision = evaluate_pair(
         {"career_directions": ["BACKEND"], "business_directions": ["INSURANCE"], "required_skills": []},
         {"career_directions": ["BACKEND"], "business_directions": ["GAMING"], "skills": []},
     )
-    assert decision.eligibility == "rejected"
-    assert "business_direction_mismatch" in decision.hard_reasons
+    assert decision.eligibility == "eligible"
+    assert decision.hard_reasons == ()
+    assert decision.business_match is False
 
 
 def test_business_direction_intersection_passes():
@@ -119,27 +121,30 @@ def test_business_direction_intersection_passes():
         {"career_directions": ["BACKEND"], "business_directions": ["MARKETING"], "skills": []},
     )
     assert decision.eligibility == "eligible"
+    assert decision.business_match is True
 
 
 def test_business_direction_missing_on_one_side_is_not_filtered():
-    """业务方向是新增字段：任一侧缺失时不淘汰，避免伤及存量数据。"""
+    """业务方向是新增字段：任一侧缺失时不淘汰，标记为 None 并归入非置顶组。"""
     decision = evaluate_pair(
         {"career_directions": ["BACKEND"], "business_directions": ["INSURANCE"], "required_skills": []},
         {"career_directions": ["BACKEND"], "skills": []},
     )
     assert decision.eligibility == "eligible"
+    assert decision.business_match is None
 
 
-def test_both_sides_must_match_career_and_business():
-    """两侧都要有交集：职业命中但业务不命中仍拒绝。"""
+def test_career_mismatch_rejects_even_when_business_matches():
+    """职业方向仍是硬门槛：职业不一致直接拒绝，业务方向一致也不放行。"""
     decision = evaluate_pair(
         {"career_directions": ["BACKEND"], "career_specializations": ["BACKEND_SERVICE"],
          "business_directions": ["INSURANCE"], "required_skills": []},
-        {"career_directions": ["BACKEND"], "career_specializations": ["BACKEND_SERVICE"],
-         "business_directions": ["GAMING"], "skills": []},
+        {"career_directions": ["ALGORITHM"], "career_specializations": ["ALGORITHM_LLM"],
+         "business_directions": ["INSURANCE"], "skills": []},
     )
     assert decision.eligibility == "rejected"
-    assert "business_direction_mismatch" in decision.hard_reasons
+    assert "career_direction_mismatch" in decision.hard_reasons
+    assert decision.business_match is True
 
 
 def test_evaluate_pair_must_skill_missing_is_rejected():

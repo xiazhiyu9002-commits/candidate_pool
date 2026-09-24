@@ -3,8 +3,13 @@
 结论独立落表 ``search_review``，按「查询指纹 + 候选人」唯一可查：同一个人在不同搜索
 条件下的结论互不覆盖，同一条搜索条件重复复核则覆盖旧结论。
 
-评论契约与匹配复核共用一份 JSON（``ReviewVerdictModel``）：``reasons`` 是亮点、
-``cautions`` 是风险点；落库时映射到 ``highlights`` / ``risks`` 两列，界面按列展示。
+与匹配复核共用一份 JSON 契约（``ReviewVerdictModel``）与同一组提示词常量：三个维度
+（项目 → 工作经历 → 技术栈）按顺序产出，落库时把三段按顺序拼进 ``highlights`` 列、
+风险点进 ``risks`` 列。
+
+输入只给**软性条件**（业务方向、技能、公司/职位等）与候选人技术、业务、项目信息：
+学历、学校层次、年限、年龄、城市、QS、性别、姓名、排除技能等硬条件已在筛选阶段生效，
+复核阶段不再评价（查询指纹仍按全量筛选条件计算，避免不同条件共用同一批结论）。
 """
 from __future__ import annotations
 
@@ -17,7 +22,12 @@ from sqlalchemy import select
 
 from kerui_recruit.db.models import ResumeDocument, ResumeRevision, SearchReview
 from kerui_recruit.match.review import (
+    REVIEW_OUTPUT_CONTRACT,
+    REVIEW_VERDICT_RULES,
+    REVIEW_WEIGHT_RULES,
     ReviewVerdictModel,
+    apply_consistency_fallback,
+    build_basis,
     build_candidate_text,
     validated_verdict,
 )
@@ -35,6 +45,14 @@ _CONDITION_FIELDS = (
     "company", "title", "school", "direction", "school_region", "specializations",
     "career_directions", "career_specializations", "business_directions",
 )
+
+# 传给模型的软性条件：硬条件（学历/年限/年龄/城市/QS/学校层级/性别/姓名/排除技能）
+# 已在筛选阶段生效，复核阶段再评价只会引入噪声；指纹仍用 _CONDITION_FIELDS 全量。
+_SOFT_CONDITION_FIELDS = (
+    "company", "title", "direction", "specializations",
+    "career_directions", "career_specializations", "business_directions",
+)
+
 
 _CONDITION_LABELS = {
     "min_years": "最低工作年限",
@@ -103,34 +121,37 @@ def review_base_key(query_key: str, candidate_ids: Sequence[str]) -> str:
 
 
 def describe_conditions(query: str, filters: dict | None = None) -> str:
-    """把搜索条件写成给模型看的一段话：亮点/风险点要针对这些条件，而不是泛泛而谈。"""
+    """把搜索条件写成给模型看的一段话：只给软性条件——硬条件已在筛选阶段生效。"""
     lines: list[str] = []
     text = _normalize_query(query)
     if text:
         lines.append(f"关键词：{text}")
     conditions = _normalized_conditions(filters)
-    if conditions:
+    soft = {field: conditions[field] for field in _SOFT_CONDITION_FIELDS if field in conditions}
+    if soft:
         rendered = "；".join(
             f"{_CONDITION_LABELS.get(field, field)}："
             + ("、".join(value) if isinstance(value, list) else value)
-            for field, value in conditions.items()
+            for field, value in soft.items()
         )
-        lines.append(f"筛选条件：{rendered}")
+        lines.append(f"软性要求：{rendered}")
     return "\n".join(lines) or "（招聘方没有给出明确条件，属于泛检索）"
 
 
 def build_query_review_prompt(conditions: str, candidate_text: str) -> str:
-    """搜索复核 prompt：对照搜索条件产出亮点与风险点，每条附证据编号。"""
+    """搜索复核 prompt：与匹配复核共用权重、三档判据与 JSON 契约，只输出三个维度的匹配点与风险点。"""
     return (
-        "你在按招聘方的搜索条件复核一位候选人。请先判断候选人是否值得推荐，"
-        "再给出针对这些搜索条件的亮点与风险点（项目与业务场景优先，其次行业与技术栈）。\n"
+        "你在按招聘方的搜索条件复核一位候选人。只看技术、业务与项目层面："
+        "学历、学校层次、年限、城市等硬条件已在前面筛过，不要评价也不要复述。\n"
+        f"{REVIEW_WEIGHT_RULES}\n"
         f"搜索条件：\n{conditions}\n"
-        f"候选人简述（含项目/经历证据编号）：\n{candidate_text}\n"
-        "只返回 JSON："
-        '{"verdict":"recommend|pending|reject","reasons":["亮点…"],"cautions":["风险点…"]}。'
-        "reasons 字段填亮点、cautions 字段填风险点；每条结尾用括号标注对应证据编号"
-        "（如 projects[0]、experiences[1]）；确无证据时写「未见证据」，不要臆造经历或技术。"
-        "每条简短直接，不写过渡词、不写修饰语；没有则填空数组。"
+        f"候选人（含项目/经历证据编号）：\n{candidate_text}\n"
+        "按下面三点给结论，顺序固定（没有内容的维度填空数组）：\n"
+        "1. 项目：候选人的项目经历与搜索条件里的业务、技术要求是否匹配；\n"
+        "2. 工作经历：候选人的工作经历与搜索条件里的业务、技术要求是否匹配；\n"
+        "3. 技术栈：候选人的技术栈与搜索条件里的技术要求是否匹配。\n"
+        f"{REVIEW_VERDICT_RULES}\n"
+        f"{REVIEW_OUTPUT_CONTRACT}"
     )
 
 
@@ -138,11 +159,21 @@ def _failed_verdict(message: str, error: str) -> dict:
     """复核失败的条目：仍按「待核」呈现，但显式带上失败标记与原因。"""
     return {
         "verdict": "pending",
-        "reasons": (),
-        "cautions": (message,),
+        "project_match": (),
+        "experience_match": (),
+        "tech_match": (),
+        "risks": (message,),
         "failed": True,
         "error": error,
     }
+
+
+def _highlights(verdict: dict) -> list[str]:
+    """把三个维度按「项目 → 工作经历 → 技术栈」顺序拼成亮点列。"""
+    merged: list[str] = []
+    for key in ("project_match", "experience_match", "tech_match"):
+        merged.extend(verdict.get(key) or ())
+    return merged
 
 
 class SearchReviewService:
@@ -193,21 +224,27 @@ class SearchReviewService:
             if candidate_id in parsed:
                 continue
             self._upsert(query_key, conditions, candidate_id, None,
-                         _failed_verdict("简历尚未解析完成，无法复核", "NO_PARSED_RESUME"))
+                         {**_failed_verdict("简历尚未解析完成，无法复核", "NO_PARSED_RESUME"),
+                          "basis": build_basis(source="search", eligible=True)})
             done += 1
             failed += 1
             if report is not None:
                 report(int(done * 100 / total))
 
+        # 搜索侧没有前置资格判定：硬条件已在筛选阶段生效，这里只判断软性条件的匹配。
         pending_ai = [
-            (candidate_id, build_query_review_prompt(conditions, build_candidate_text(parsed[candidate_id])))
+            (
+                candidate_id,
+                build_query_review_prompt(conditions, build_candidate_text(parsed[candidate_id])),
+                build_basis(source="search", eligible=True),
+            )
             for candidate_id in ordered
             if candidate_id in parsed
         ]
 
         semaphore = asyncio.Semaphore(_REVIEW_CONCURRENCY)
 
-        async def review_one(candidate_id: str, prompt: str) -> tuple[str, dict]:
+        async def review_one(candidate_id: str, prompt: str, basis: dict) -> tuple[str, dict]:
             async with semaphore:
                 try:
                     model = await asyncio.wait_for(
@@ -218,17 +255,25 @@ class SearchReviewService:
                         ),
                         timeout=_REVIEW_CALL_TIMEOUT_SECONDS,
                     )
-                    return candidate_id, validated_verdict(model)
+                    cleaned, final_basis = apply_consistency_fallback(validated_verdict(model), basis)
+                    return candidate_id, {**cleaned, "basis": final_basis}
                 except asyncio.TimeoutError:
-                    return candidate_id, _failed_verdict(
-                        f"复核超时（单条超过 {int(_REVIEW_CALL_TIMEOUT_SECONDS)} 秒）", "TimeoutError"
-                    )
+                    return candidate_id, {
+                        **_failed_verdict(
+                            f"复核超时（单条超过 {int(_REVIEW_CALL_TIMEOUT_SECONDS)} 秒）", "TimeoutError"
+                        ),
+                        "basis": basis,
+                    }
                 except Exception as error:  # noqa: BLE001 - 单条失败不阻断整批，但必须可见
-                    return candidate_id, _failed_verdict(
-                        f"复核失败：{type(error).__name__}", type(error).__name__
-                    )
+                    return candidate_id, {
+                        **_failed_verdict(f"复核失败：{type(error).__name__}", type(error).__name__),
+                        "basis": basis,
+                    }
 
-        tasks = [asyncio.create_task(review_one(candidate_id, prompt)) for candidate_id, prompt in pending_ai]
+        tasks = [
+            asyncio.create_task(review_one(candidate_id, prompt, basis))
+            for candidate_id, prompt, basis in pending_ai
+        ]
         try:
             # 逐条完成即落库：中途取消时已出结论的部分依然可查。
             for completed in asyncio.as_completed(tasks):
@@ -262,7 +307,8 @@ class SearchReviewService:
             row.conditions_text = conditions
             row.revision_id = revision_id
             row.verdict = verdict["verdict"]
-            row.highlights = list(verdict.get("reasons") or ())
-            row.risks = list(verdict.get("cautions") or ())
+            row.highlights = _highlights(verdict)
+            row.risks = list(verdict.get("risks") or ())
+            row.basis = verdict.get("basis")
             row.failed = bool(verdict.get("failed", False))
             row.error = verdict.get("error")

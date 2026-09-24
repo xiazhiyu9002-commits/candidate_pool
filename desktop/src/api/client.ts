@@ -11,6 +11,7 @@ import type { JdExactConstraint } from "../components/JdProfileEditor";
 import type {
   AppSettings,
   BackupSnapshot,
+  BdAgentLead,
   BdAgentQueryResult,
   BdLead,
   BdPoolCandidate,
@@ -26,6 +27,7 @@ import type {
   CaseDetail,
   CaseEventItem,
   CaseRoundItem,
+  CandidateReminderItem,
   CorrectionRecord,
   DashboardByJd,
   DashboardOverview,
@@ -85,6 +87,8 @@ export interface CandidateSearchOptions {
   operator: CandidateKeywordOperator;
   rewriteEnabled: boolean;
   searchBody?: boolean;
+  /** AI 智能解析：把输入框自然语言拆成硬条件 + 词条 + 语义查询（默认关闭，三种模式均可用）。 */
+  parseEnabled?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -99,6 +103,14 @@ class ApiRequestError extends Error {
     super(message);
     this.name = "ApiRequestError";
   }
+}
+
+/** 画像生成的阶段性反馈（服务端推送，文案由服务端给）。 */
+export interface ProfileGenerationProgress {
+  /** 阶段标识：`loading` / `draft` / `repair`。 */
+  stage: string;
+  /** 直接展示给使用者的中文说明。 */
+  message: string;
 }
 
 export interface DashboardQuery {
@@ -261,19 +273,23 @@ export class ApiClient implements RecruitmentApi {
   }
 
   searchCandidates(query: string, filters?: CandidateSearchFilters, options?: CandidateSearchOptions): Promise<CandidateSearchResult> {
-    const { mode = "hybrid", operator = "smart", rewriteEnabled = false, searchBody = false, limit, offset = 0 } = options ?? {};
-    // 关键词/精确筛选：返回所有满足条件的；混合/向量：相关性排序后返回（上限 100）。
-    const effectiveLimit = limit ?? ((mode === "keyword" || !query.trim()) ? 2000 : 100);
+    const { mode = "hybrid", operator = "smart", rewriteEnabled = false, searchBody = false, parseEnabled = false, limit, offset = 0 } = options ?? {};
+    // 关键词/精确筛选：返回所有满足条件的；混合/向量：相关性排序后返回（默认 50）。
+    // 默认值取 50 的依据（见方案 §4.5 实测）：limit=20/50/100 三档的头部指标
+    // （R@20 / NDCG@10 / P@5）完全相同，且 limit=50 的 R@50 已与 limit=100 持平——
+    // 多返回的那 50 条没有质量增量，却要多传一倍数据。
+    const effectiveLimit = limit ?? ((mode === "keyword" || !query.trim()) ? 2000 : 50);
     // 关键词模式不支持 AI 语义改写：即使开关开着也不发送，避免后端 422。
     const effectiveRewrite = mode === "keyword" ? false : rewriteEnabled;
     // 向量/混合模式仅支持智能排序：强制使用 smart，避免后端 422。
     const effectiveOperator = mode === "keyword" ? operator : "smart";
-    // 正文检索仅在关键词模式生效。
-    const effectiveSearchBody = mode === "keyword" ? searchBody : false;
+    // 正文检索（检索经历/项目正文）在关键词与混合两种模式下含义一致：都只影响关键词通道，
+    // 不影响向量与重排。向量模式没有 FTS 通道，开关无意义，仍不发送。
+    const effectiveSearchBody = mode === "vector" ? false : searchBody;
     return this.request<CandidateSearchResult>("/api/search/candidates", {
       body: JSON.stringify({
         query, mode, operator: effectiveOperator, rewrite_enabled: effectiveRewrite,
-        search_body: effectiveSearchBody, limit: effectiveLimit, offset,
+        search_body: effectiveSearchBody, parse_enabled: parseEnabled, limit: effectiveLimit, offset,
         ...(filters && Object.keys(filters).length ? { filters } : {})
       }),
       headers: { "Content-Type": "application/json" },
@@ -404,26 +420,37 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
-  regenerateJdProfile(jdId: string, instruction = "") {
-    return this.request<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string; constraints?: JdExactConstraint[] }>(
+  regenerateJdProfile(
+    jdId: string,
+    instruction = "",
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ) {
+    return this.streamProfileGeneration<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string; constraints?: JdExactConstraint[] }>(
       `/api/jd/${encodeURIComponent(jdId)}/regen-profile`,
-      {
-        body: JSON.stringify({ instruction }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST"
-      }
+      { instruction },
+      onStage,
     );
   }
 
   parseJdConstraints(sourceText: string) {
-    return this.request<{ constraints: JdExactConstraint[] }>(
+    // 年限不在 exact_constraints 里（它是 min_years 驱动的硬窗口），故单独回传：
+    // min_years 为 null 且 years_stated 为 true 表示画像明确「经验不限」，要清空年限。
+    return this.request<{ constraints: JdExactConstraint[]; min_years: number | null; years_stated: boolean }>(
       "/api/jd/parse-constraints",
       { body: JSON.stringify({ source_text: sourceText }), headers: { "Content-Type": "application/json" }, method: "POST" }
     );
   }
 
   matchJd(revisionId: string, limit = 50, mode: "keyword" | "vector" | "hybrid" = "hybrid") {
-    return this.request<{ run_id: string; items: CandidateSearchResult["items"] }>(
+    return this.request<{
+      run_id: string | null;
+      items: CandidateSearchResult["items"];
+      empty_reason?: string | null;
+      // 实际下推到检索层的 JD 硬条件（含原文依据），用于在匹配结果页明示排除依据。
+      hard_filters?: { kind: string; alternatives: string[]; source_text: string }[];
+      // 安全阀触发时回退掉的硬条件；非空表示结果不再受这些条件约束。
+      relaxed?: string[];
+    }>(
       "/api/match/jd",
       {
         body: JSON.stringify({ revision_id: revisionId, limit, mode }),
@@ -813,7 +840,8 @@ export class ApiClient implements RecruitmentApi {
     query: string,
     kind = "text",
     limit = 10,
-    onProgress?: (progress: BdProgress) => void
+    onProgress?: (progress: BdProgress) => void,
+    onLeads?: (leads: BdAgentLead[]) => void
   ) {
     const headers = new Headers();
     headers.set("X-Kerui-Session", this.sessionToken);
@@ -843,9 +871,12 @@ export class ApiClient implements RecruitmentApi {
         if (!raw) continue;
         const data = JSON.parse(raw) as
           | (BdProgress & { type: "progress" })
-          | (BdAgentQueryResult & { type: "result" });
+          | (BdAgentQueryResult & { type: "result" })
+          | { type: "leads"; leads: BdAgentLead[] };
         if (data.type === "progress" && onProgress) {
           onProgress({ stage: data.stage, message: data.message });
+        } else if (data.type === "leads" && onLeads) {
+          onLeads(data.leads);
         } else if (data.type === "result") {
           result = data as BdAgentQueryResult;
         }
@@ -1003,6 +1034,30 @@ export class ApiClient implements RecruitmentApi {
     return this.request<DailyFollowupToday>("/api/daily-followup/today");
   }
 
+  checkDailyTodo(input: { item_key: string; done: boolean }) {
+    return this.request<{ date: string; item_key: string; done: boolean }>("/api/daily-followup/check", {
+      method: "POST",
+      // 必须显式声明 JSON：否则浏览器按 text/plain 发送，FastAPI 解析不出 body 会回 422。
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  createCandidateReminder(input: { candidate_id: string; content: string }) {
+    return this.request<CandidateReminderItem>("/api/candidate-reminders", {
+      method: "POST",
+      // 必须显式声明 JSON：否则浏览器按 text/plain 发送，FastAPI 解析不出 body 会回 422。
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  completeCandidateReminder(reminderId: string) {
+    return this.request<CandidateReminderItem>(`/api/candidate-reminders/${reminderId}/done`, {
+      method: "POST",
+    });
+  }
+
   reverseMatch(candidateId: string, mode: "keyword" | "vector" | "hybrid" = "hybrid") {
     return this.request<ReverseMatchItem[]>(
       `/api/match/reverse/${encodeURIComponent(candidateId)}?mode=${encodeURIComponent(mode)}`
@@ -1027,6 +1082,23 @@ export class ApiClient implements RecruitmentApi {
   }
 
   // points/compact 由「重新生成」的双形态结果原样透传；手工编辑时为空，后端按句读确定性拆点。
+  /**
+   * 保存候选人的沟通记录（单条自由文本，整条覆盖）。
+   *
+   * 与 `updateCandidateField` 分开是刻意的：后者写 parsed_data，会触发画像过期判定
+   * 与索引重建；沟通记录是候选人级备注，既不进画像也不进索引。
+   */
+  updateCommunicationNote(candidateId: string, note: string) {
+    return this.request<{ candidate_id: string; communication_note: string | null }>(
+      `/api/resumes/candidate/${encodeURIComponent(candidateId)}/communication-note`,
+      {
+        body: JSON.stringify({ note }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
+    );
+  }
+
   updateCandidateField(
     candidateId: string,
     field: string,
@@ -1054,14 +1126,15 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
-  regenerateCandidateProfile(candidateId: string, instruction = "") {
-    return this.request<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string }>(
+  regenerateCandidateProfile(
+    candidateId: string,
+    instruction = "",
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ) {
+    return this.streamProfileGeneration<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string }>(
       `/api/resumes/candidate/${encodeURIComponent(candidateId)}/regen-profile`,
-      {
-        body: JSON.stringify({ instruction }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST"
-      }
+      { instruction },
+      onStage,
     );
   }
 
@@ -1375,6 +1448,76 @@ export class ApiClient implements RecruitmentApi {
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
+  }
+
+  /**
+   * 画像生成：走 SSE 拿阶段性反馈（`loading` / `draft` / `repair`），最后收结果或错误。
+   *
+   * 为什么不用普通 POST：生成最坏要等 150 秒，界面上只有一个转圈时，使用者分不清
+   * 「快好了」和「刚开始第二次模型调用」——而这两者预期等待差一倍。服务端按
+   * `Accept: text/event-stream` 在**同一个路径**上切成流式（见后端 `api/profile_stream.py`，
+   * 那里写了为什么不新开一条 `-stream` 路由）。
+   *
+   * 错误在流里以 `error` 事件回传（响应头一旦发出就改不了状态码），这里还原成
+   * `ApiRequestError`，让调用方的错误处理与普通请求完全一致。
+   */
+  private async streamProfileGeneration<T>(
+    path: string,
+    body: Record<string, unknown>,
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ): Promise<T> {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    headers.set("Content-Type", "application/json");
+    headers.set("Accept", "text/event-stream");
+    const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      // 会话失效、路由不存在这类「流还没开始」的失败仍是普通 HTTP 错误。
+      const payload = (await response.json().catch(() => ({}))) as ApiError;
+      throw new ApiRequestError(
+        payload.message ?? payload.detail ?? "本机服务请求失败，请稍后重试",
+        response.status,
+      );
+    }
+    if (!response.body) throw new ApiRequestError("当前环境不支持流式响应", response.status);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: T | null = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        const data = JSON.parse(raw) as { type?: string; [key: string]: unknown };
+        if (data.type === "progress") {
+          onStage?.({
+            stage: String(data.stage ?? ""),
+            message: String(data.message ?? ""),
+          });
+        } else if (data.type === "error") {
+          throw new ApiRequestError(
+            String(data.message ?? "画像生成失败"),
+            Number(data.status ?? 500),
+          );
+        } else {
+          result = data as unknown as T;
+        }
+      }
+    }
+    if (result === null) throw new ApiRequestError("未收到生成结果，请稍后重试", response.status);
+    return result;
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

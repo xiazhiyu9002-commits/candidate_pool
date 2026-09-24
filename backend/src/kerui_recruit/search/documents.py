@@ -6,16 +6,20 @@ The keyword text and vector text are intentionally different:
   city, all companies/titles, skills, AI profile, readable age/years/QS). It is
   the single target for FTS recall and exclusion evidence. It must NOT contain
   the phone number, job responsibility body or project body.
-- ``vector_text`` carries only the semantic surface (AI profile, education,
-  city/years, most-recent company/title and skills). It is embedded into the
-  vector and reused for semantic reranking.
+- ``vector_text`` carries only the semantic surface. v9 keeps 职业定位 / 有来源的
+  能力摘要 / 结构化业务方向 / 去重限长的技术概览 / 最近岗位名，并**排除**姓名、城市、
+  学历、学校、QS、工作年限与单纯用于精确筛选的公司枚举 —— 这些字段由结构化列承载精确
+  过滤，放回向量只会稀释语义。
+- 子片段（profile_point / experience / project）各自独立成向量：保留原始 ``kind``、
+  ``sequence``、``evidence_path``，不把完整父画像复制进每个片段。
 
 Field term lists power precise field filters and must never be polluted by
 terms appearing in the AI profile or another field.
 """
 from __future__ import annotations
 
-from kerui_recruit.direction.policy import extract_multi_directions
+from kerui_recruit.direction.policy import BUSINESS_DIRECTION_LABELS, extract_multi_directions
+from kerui_recruit.search.cities import normalize_location_terms
 from kerui_recruit.search.lexicon import (
     expand_degree_tokens,
     expand_document_tokens,
@@ -23,6 +27,16 @@ from kerui_recruit.search.lexicon import (
     normalize_skill,
     tokenize_lexical_text,
 )
+
+# v9 父向量：技能概览的去重长度上限（核心技能在前，超出部分被截断）。
+PARENT_SKILL_LIMIT = 24
+# v9 子片段允许携带的职业定位前缀长度上限（中文字符）。
+_CHILD_PREFIX_MAX = 30
+# v8 是阶段 3 的**消融对照**口径：父向量含城市/学历/年限/公司与不限长技能，
+# 子片段前缀 60 字符且不含技术栈。生产路径一律使用 v9，只有隔离索引消融脚本才传 v8。
+VECTOR_VERSIONS = ("v8", "v9")
+DEFAULT_VECTOR_VERSION = "v9"
+_V8_CHILD_PREFIX_MAX = 60
 
 
 def _as_list(value: object) -> list[str]:
@@ -100,18 +114,28 @@ def _profile_text(data: dict) -> str:
     )
 
 
+def business_direction_labels(data: dict) -> list[str]:
+    """结构化业务方向的中文标签，作为父向量的业务语义面（与 FTS 词表同源）。"""
+    _, _, business = extract_multi_directions(data)
+    return [BUSINESS_DIRECTION_LABELS.get(code, code) for code in business]
+
+
 def build_candidate_document(
     data: dict,
     *,
     display_name: str | None = None,
     school_alias_groups: dict[str, tuple[str, ...]] | None = None,
+    vector_version: str = DEFAULT_VECTOR_VERSION,
 ) -> dict:
     """Build the search document fields from a normalized resume dict.
 
     ``data`` is the JSON-serializable ``parsed_data`` of the current revision.
     ``display_name`` overrides ``data["name"]`` when the human-edited candidate
     name is the authoritative value.
+    ``vector_version`` 只影响父向量文本口径：v9 是生产口径，v8 仅供隔离索引消融对照。
     """
+    if vector_version not in VECTOR_VERSIONS:
+        raise ValueError(f"Unsupported vector version: {vector_version}")
     name = display_name or data.get("name")
     skills = _uniq(_as_list(data.get("skills")))
     canonical_skills = _uniq([normalize_skill(skill) for skill in skills])
@@ -157,9 +181,10 @@ def build_candidate_document(
 
     # 现居城市筛选只看现居字段（合同冻结地点语义）；意向地点由 preferred_locations 单独承载，
     # 工作经历中的地点不得混入现居过滤，避免「现居上海」误命中「意向上海/曾在上海工作」的人。
+    # 归一化：下游是精确 array_has_any，`广东省深圳市` 这类写法不归一化就永远召不回。
     location_terms: list[str] = []
     if data.get("location"):
-        location_terms.append(str(data["location"]))
+        location_terms.extend(normalize_location_terms(str(data["location"])))
 
     school_level = data.get("school_level")
     if school_level:
@@ -176,8 +201,7 @@ def build_candidate_document(
     total_years = data.get("total_years")
     qs_rank = data.get("qs_rank")
 
-    # Recent company/title for the vector surface.
-    recent_company = data.get("current_company") or (company_terms[0] if company_terms else None)
+    # 最近岗位名：只在它能解释职业定位时保留（城市/学历/年限/公司枚举都已移出向量）。
     recent_title = data.get("current_title") or (title_terms[0] if title_terms else None)
 
     keyword_parts = [
@@ -195,15 +219,24 @@ def build_candidate_document(
     ]
     keyword_text = _text(*keyword_parts)
 
-    vector_parts = [
-        _profile_text(data),
-        *education_text,
-        data.get("location"),
-        _readable_years(total_years),
-        recent_company,
-        recent_title,
-        *canonical_skills,
-    ]
+    if vector_version == "v8":
+        recent_company = data.get("current_company") or (company_terms[0] if company_terms else None)
+        vector_parts = [
+            _profile_text(data),
+            *education_text,
+            data.get("location"),
+            _readable_years(total_years),
+            recent_company,
+            recent_title,
+            *canonical_skills,
+        ]
+    else:
+        vector_parts = [
+            _profile_text(data),
+            *business_direction_labels(data),
+            recent_title,
+            *canonical_skills[:PARENT_SKILL_LIMIT],
+        ]
     vector_text = _text(*vector_parts)
 
     keyword_index_text = _build_keyword_index_text(
@@ -358,24 +391,33 @@ def _profile_points(data: dict) -> list[str]:
     return [text for text, _ in _profile_point_items(data)]
 
 
-def _compact_profile(data: dict) -> str:
-    """画像浓缩前缀：显式 compact 字段，或整体画像首句截断（足够短，不淹没子片段）。"""
+def _compact_profile(data: dict, limit: int = _CHILD_PREFIX_MAX) -> str:
+    """画像浓缩前缀：显式 compact 字段，或整体画像首句；长度受 ``limit`` 约束。
+
+    约束存在的理由：子片段的语义主体必须是本段经历/项目，通用父画像前缀一旦过长就会淹没它。
+    """
     compact = str(data.get("ai_profile_compact") or "").strip()
-    if compact:
-        return compact
-    points = _profile_points(data)
-    return points[0][:60] if points else ""
+    if not compact:
+        points = _profile_points(data)
+        compact = points[0] if points else ""
+    return compact[:limit]
 
 
-def build_child_documents(data: dict) -> list[dict]:
+def build_child_documents(data: dict, *, vector_version: str = DEFAULT_VECTOR_VERSION) -> list[dict]:
     """为画像分点、工作经历与项目经历生成「子 chunk」文档。
 
     每个子 chunk 独立向量化，其 vector_text 为「简短画像浓缩前缀 + 本片段内容」，
     避免前缀淹没具体项目/工作经历；同时记录 parent_id、片段类型与序号/证据路径。
     子 chunk 不写入硬条件字段（年限/学历/地点等），硬过滤仍由父 chunk 承担。
+
+    ``vector_version="v8"`` 仅供隔离索引消融对照（前缀 60 字符、经历不含技术栈）。
     """
-    compact = _compact_profile(data)
+    if vector_version not in VECTOR_VERSIONS:
+        raise ValueError(f"Unsupported vector version: {vector_version}")
+    prefix_limit = _V8_CHILD_PREFIX_MAX if vector_version == "v8" else _CHILD_PREFIX_MAX
+    compact = _compact_profile(data, prefix_limit)
     prefix = f"{compact} " if compact else ""
+    include_tech_stack = vector_version != "v8"
     children: list[dict] = []
 
     # 画像分点作为独立子切片（证据路径取自结构化分点，缺省回退位置序号）。
@@ -392,9 +434,10 @@ def build_child_documents(data: dict) -> list[dict]:
         if not isinstance(exp, dict):
             continue
         parts = [
-            str(exp.get("company") or ""),
-            str(exp.get("title") or ""),
-            str(exp.get("summary") or ""),
+            _flat(exp.get("title")),
+            _flat(exp.get("company")),
+            _flat(exp.get("tech_stack")) if include_tech_stack else "",
+            _flat(exp.get("summary")),
         ]
         if not any(p.strip() for p in parts):
             continue

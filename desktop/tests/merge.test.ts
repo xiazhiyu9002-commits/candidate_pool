@@ -14,19 +14,20 @@ function conn(connection_id: string, enabled: boolean): AiConnectionUpdate {
 }
 
 describe("mergeAiConnection", () => {
-  test("replaces a disabled slot instead of dropping the new connection", () => {
+  test("appends the new connection instead of dropping it", () => {
     const result = mergeAiConnection(
-      [conn("enabled-1", true), conn("disabled-1", false)],
-      conn("new-backup", true),
+      [conn("primary", true), conn("backup", true)],
+      conn("new-third", true),
     );
-    expect(result.map((c) => c.connection_id)).toEqual(["enabled-1", "new-backup"]);
+    expect(result.map((c) => c.connection_id)).toEqual(["primary", "backup", "new-third"]);
   });
 
-  test("two disabled connections still keep the new primary", () => {
+  test("keeps existing order and never promotes the new connection above it", () => {
     const result = mergeAiConnection(
-      [conn("disabled-1", false), conn("disabled-2", false)],
-      conn("new-primary", true),
+      [conn("kept-1", false), conn("kept-2", false)],
+      conn("new-connection", true),
     );
-    expect(result.map((c) => c.connection_id)).toContain("new-primary");
+    expect(result[0].connection_id).toBe("kept-1");
+    expect(result[result.length - 1].connection_id).toBe("new-connection");
   });
 });

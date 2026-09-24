@@ -453,7 +453,7 @@ def test_word_level_fts_boundaries(tmp_path):
 
 def test_index_version_is_ten():
     assert INDEX_SCHEMA_VERSION == "10"
-    assert INDEX_CHUNK_VERSION == "8"
+    assert INDEX_CHUNK_VERSION == "10"
 
 
 def test_version_four_metadata_requires_rebuild(tmp_path):
@@ -464,3 +464,30 @@ def test_version_four_metadata_requires_rebuild(tmp_path):
                     "vector_dimension": 2, "chunk_version": "4"}), encoding="utf-8")
     assert not index.is_compatible()
     assert "rebuild" in (index.compatibility_error or "").lower()
+
+
+def test_v8_chunk_index_requires_rebuild_but_stays_readable(tmp_path):
+    """chunk 8（v8 文档口径）必须被判为需要重建，但只读检索仍可回退使用。"""
+    index = LanceDBSearchIndex(tmp_path, vector_dimension=2)
+    index.upsert([chunk("a")])
+    metadata_path = tmp_path / "candidate-index-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["chunk_version"] = "8"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    stale = LanceDBSearchIndex(tmp_path, vector_dimension=2)
+    assert not stale.is_compatible()
+    assert "explicit rebuild" in (stale.compatibility_error or "")
+    assert stale.is_readable()
+    assert stale.is_ready()
+
+
+def test_current_chunk_version_rebuild_is_compatible_and_writable(tmp_path):
+    """按当前 chunk 口径重建后兼容性通过、可写。"""
+    index = LanceDBSearchIndex(tmp_path, vector_dimension=2)
+    index.upsert([chunk("a")])
+    metadata = json.loads((tmp_path / "candidate-index-metadata.json").read_text(encoding="utf-8"))
+    assert metadata["chunk_version"] == "10"
+    assert index.is_compatible()
+    index.upsert([chunk("b")])
+    assert {row["candidate_id"] for row in index.search_fts("Python", CandidateFilters(), 20)} == {"a", "b"}

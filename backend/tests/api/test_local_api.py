@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.core.settings import Settings
 from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.models import ResumeRevision
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.main import create_app
 from kerui_recruit.providers.fakes import FakeEmbeddingProvider, FakeRerankerProvider
@@ -129,6 +130,52 @@ async def test_resume_import_reaches_task_status_and_search(tmp_path: Path) -> N
     result = searched.json()
     assert result["items"][0]["candidate_id"] == payload["candidate_id"]
     assert result["degraded_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_fragmented_profile_points_are_repaired_on_read_without_touching_storage(
+    tmp_path: Path,
+) -> None:
+    """历史遗留的碎片分点在**读取时**按整体段落重算，且不改库。
+
+    按逗号切出来的分点会让 AI 画像列「每隔一个标点就换行」；展示层修好它，
+    落库修复（需要重建向量索引）留给单独的回填脚本。
+    """
+    services, pipeline = build_services(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(services))
+    headers = {"X-Kerui-Session": "test-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        imported = await client.post(
+            "/api/resumes/import",
+            files={"file": ("张三.pdf", make_pdf_bytes(), "application/pdf")},
+            headers=headers,
+        )
+        revision_id = imported.json()["revision_id"]
+        await pipeline.run(revision_id)
+        # 造出一份「按逗号切碎」的历史遗留画像。
+        with services.session_factory() as session:
+            revision = session.get(ResumeRevision, revision_id)
+            parsed = dict(revision.parsed_data or {})
+            parsed["ai_profile_summary"] = "3年后端经验，现任京东后端开发工程师。"
+            parsed["ai_profile_points"] = [
+                {"text": "3年后端经验", "evidence_paths": []},
+                {"text": "现任京东后端开发工程师", "evidence_paths": []},
+            ]
+            revision.parsed_data = parsed
+            session.commit()
+
+        listed = await client.get("/api/resumes/candidates", headers=headers)
+
+    assert listed.status_code == 200
+    points = listed.json()[0]["parsed_data"]["ai_profile_points"]
+    assert [p["text"] for p in points] == ["3年后端经验，现任京东后端开发工程师"]
+
+    with services.session_factory() as session:
+        stored = session.get(ResumeRevision, revision_id).parsed_data
+        # 读取时修复不改库：库里仍是两份碎片，等回填脚本处理。
+        assert [p["text"] for p in stored["ai_profile_points"]] == [
+            "3年后端经验", "现任京东后端开发工程师",
+        ]
 
 
 @pytest.mark.asyncio

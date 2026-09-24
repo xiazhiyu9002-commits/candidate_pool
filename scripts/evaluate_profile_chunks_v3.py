@@ -33,11 +33,13 @@ def _profile_points(data: dict) -> list[str]:
 
 
 def _compact(data: dict) -> str:
+    from kerui_recruit.search.documents import _CHILD_PREFIX_MAX
+
     compact = str(data.get("ai_profile_compact") or "").strip()
     if compact:
-        return compact
+        return compact[: _CHILD_PREFIX_MAX]
     points = _profile_points(data)
-    return points[0][:60] if points else ""
+    return points[0][: _CHILD_PREFIX_MAX] if points else ""
 
 
 def build_variants(data: dict) -> dict[str, dict]:

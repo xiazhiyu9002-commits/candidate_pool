@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -78,6 +79,100 @@ async def test_editing_profile_input_marks_ai_profile_stale(tmp_path: Path) -> N
         revision = session.get(ResumeRevision, revision_id)
         assert revision.parsed_data["ai_profile_stale"] is True
         assert revision.parsed_data["ai_profile_source"] == "ai"
+
+
+@pytest.mark.asyncio
+async def test_profile_stream_reports_stages_then_result(tmp_path: Path) -> None:
+    """候选人画像的流式重生成：先推阶段（loading/draft），最后推结果。
+
+    与岗位侧同一个 `api/profile_stream.py`，但走的是另一个端点的接线，必须分别证明。
+    """
+    services = build_services(tmp_path)
+    candidate_id, _ = seed_candidate_with_profile(services)
+
+    class _StreamingBackfill:
+        async def regenerate_candidate_profile(self, candidate_id: str, instruction=None, *, on_stage=None):
+            assert on_stage is not None, "流式路径必须把阶段回调传下去"
+            on_stage("loading")
+            on_stage("draft")
+            return {"generated": True, "summary": "五年后端经验。",
+                    "points": [{"text": "五年后端经验。", "evidence_paths": []}],
+                    "compact": "五年后端经验。"}
+
+    services = replace(services, backfill_service=_StreamingBackfill())
+    transport = httpx.ASGITransport(app=create_app(services), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        response = await client.post(
+            f"/api/resumes/candidate/{candidate_id}/regen-profile",
+            json={"instruction": ""},
+            headers={"X-Kerui-Session": "test-token", "Accept": "text/event-stream"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    assert '"stage": "loading"' in body and '"stage": "draft"' in body, body
+    assert "event: result" in body
+    assert '"summary": "五年后端经验。"' in body
+
+
+@pytest.mark.asyncio
+async def test_profile_stream_without_accept_header_stays_json(tmp_path: Path) -> None:
+    """没要求流式时仍是普通 JSON（内容协商，不是把同步路径改掉）。
+
+    接口探针与既有调用方都不带 `Accept: text/event-stream`，它们的响应必须一字不变。
+    """
+    services = build_services(tmp_path)
+    candidate_id, _ = seed_candidate_with_profile(services)
+
+    class _Backfill:
+        async def regenerate_candidate_profile(self, candidate_id: str, instruction=None, *, on_stage=None):
+            return {"generated": True, "summary": "五年后端经验。", "points": [], "compact": "五年后端经验。"}
+
+    services = replace(services, backfill_service=_Backfill())
+    transport = httpx.ASGITransport(app=create_app(services), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        response = await client.post(
+            f"/api/resumes/candidate/{candidate_id}/regen-profile",
+            json={"instruction": ""},
+            headers={"X-Kerui-Session": "test-token"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["summary"] == "五年后端经验。"
+
+
+@pytest.mark.asyncio
+async def test_profile_regeneration_surfaces_provider_unavailable_as_502(tmp_path: Path) -> None:
+    """画像重生成遇到「没有可用的 AI 服务」要回 502/503，不能压成 500 内部错误。
+
+    实测（全量接口功能测试）：`E_AI_NO_PROVIDER` 被 `except Exception` 包成
+    `500 E_PROFILE_GENERATION_FAILED`，前端无法区分「服务不可用可重试」与「真出错了」。
+    岗位侧 `/api/jd/{id}/regen-profile` 同一个坑，见 test_jd_profile_regeneration_error_mapping。
+    """
+    from kerui_recruit.providers.errors import ProviderError
+
+    services = build_services(tmp_path)
+    candidate_id, _ = seed_candidate_with_profile(services)
+
+    class _UnavailableBackfill:
+        async def regenerate_candidate_profile(self, candidate_id: str, instruction=None, *, on_stage=None):
+            raise ProviderError(code="E_AI_NO_PROVIDER", retryable=True,
+                                user_message="没有可用的 AI 服务")
+
+    # AppServices 是 frozen dataclass：换服务要用 replace 造一份，不能就地赋值。
+    services = replace(services, backfill_service=_UnavailableBackfill())
+    transport = httpx.ASGITransport(app=create_app(services), raise_app_exceptions=False)
+    headers = {"X-Kerui-Session": "test-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        response = await client.post(
+            f"/api/resumes/candidate/{candidate_id}/regen-profile",
+            json={"instruction": "一句话概括"},
+            headers=headers,
+        )
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "E_AI_NO_PROVIDER"
 
 
 @pytest.mark.asyncio

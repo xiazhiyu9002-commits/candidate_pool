@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import AsyncContextManager
 from uuid import uuid4
@@ -7,6 +8,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 Lifespan = Callable[[FastAPI], AsyncContextManager[None]]
 
@@ -28,6 +31,7 @@ def create_app(
     from kerui_recruit.api.bd_agent import router as bd_agent_router
     from kerui_recruit.api.bd_search import router as bd_search_router
     from kerui_recruit.api.cases import router as cases_router
+    from kerui_recruit.api.candidate_reminders import router as candidate_reminders_router
     from kerui_recruit.api.correction import router as correction_router
     from kerui_recruit.api.daily_followup import router as daily_followup_router
     from kerui_recruit.api.dashboard import router as dashboard_router
@@ -117,8 +121,8 @@ def create_app(
 
     @app.exception_handler(ProviderError)
     async def handle_provider_error(request: Request, error: ProviderError) -> JSONResponse:
-        status = 503 if error.retryable else 502
-        return await handle_api_error(request, ApiError(status, error.code, error.user_message, error.details))
+        return await handle_api_error(request, ApiError(
+            error.http_status, error.code, error.user_message, error.details))
 
     @app.exception_handler(LookupError)
     async def handle_lookup_error(request: Request, error: LookupError) -> JSONResponse:
@@ -134,6 +138,12 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, error: Exception) -> JSONResponse:
+        # 必须留服务端痕迹：响应体只给一句 `str(error)`，没有 traceback 就无从定位——
+        # 实测一个 500 `E_INTERNAL: Event loop is closed` 在客户端侧完全看不出是哪条路径。
+        logger.exception(
+            "未处理异常：%s %s request_id=%s",
+            request.method, request.url.path, getattr(request.state, "request_id", None),
+        )
         return JSONResponse(
             status_code=500,
             content={
@@ -173,6 +183,7 @@ def create_app(
         app.include_router(cases_router)
         app.include_router(dashboard_router)
         app.include_router(daily_followup_router)
+        app.include_router(candidate_reminders_router)
         app.include_router(settings_router)
         app.include_router(ai_settings_router)
         app.include_router(migration_router)

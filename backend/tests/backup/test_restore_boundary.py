@@ -80,6 +80,21 @@ def test_invalid_snapshot_cannot_replace_database_or_create_restore_intent(tmp_p
     backup.engine.dispose()
 
 
+def test_missing_snapshot_returns_structured_not_found(tmp_path: Path):
+    """文件名不存在是调用方错误，必须回 404 结构化错误，而不是 500 E_INTERNAL。
+
+    实测（全量接口功能测试）：不带异常映射时会落到全局 Exception 处理器，
+    返回 `500 E_INTERNAL` 并把英文内部消息 `Backup not found: …` 透给前端。
+    """
+    runtime = build_runtime(Settings(data_root=tmp_path / "data", session_token="test"))
+    with TestClient(create_app(runtime.services)) as client:
+        response = client.post("/api/backup/restore/no-such-snapshot.zip",
+                               headers={"X-Kerui-Session": "test"})
+    assert response.status_code == 404
+    assert response.json()["code"] == "E_BACKUP_NOT_FOUND"
+    runtime.services.backup_service.engine.dispose()
+
+
 def test_snapshot_names_are_unique_even_within_one_second(tmp_path: Path):
     runtime = build_runtime(Settings(data_root=tmp_path / "data", session_token="test"))
     backup = runtime.services.backup_service

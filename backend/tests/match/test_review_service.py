@@ -30,7 +30,7 @@ class _FakeTaskClient:
 
     async def complete_json(self, messages, model, reasoning=None):
         self.prompts.append(messages[0]["content"])
-        return ReviewVerdictModel(verdict="recommend", reasons=["项目匹配"], cautions=[])
+        return ReviewVerdictModel(verdict="recommend", project_match=["项目匹配（projects[0]）"])
 
 
 class _ConditionalTaskClient:
@@ -43,8 +43,8 @@ class _ConditionalTaskClient:
         prompt = messages[0]["content"]
         self.prompts.append(prompt)
         if "支付高并发服务" in prompt:
-            return ReviewVerdictModel(verdict="recommend", reasons=["有支付证据"], cautions=[])
-        return ReviewVerdictModel(verdict="reject", reasons=[], cautions=["无证据"])
+            return ReviewVerdictModel(verdict="recommend", project_match=["有支付证据（projects[0]）"])
+        return ReviewVerdictModel(verdict="reject", risks=["职责方向不同（experiences[0]）"])
 
 
 @pytest.fixture
@@ -121,12 +121,16 @@ async def test_review_run_skips_rejected_eligibility(factory):
         parsed = dict(resume.parsed_data or {})
         parsed["direction"] = "ALGORITHM"
         resume.parsed_data = parsed
-    client = _FakeTaskClient()  # 即使 AI 返回 recommend，也应被资格覆盖为 pending
+    client = _FakeTaskClient()  # 即使 AI 返回 recommend，也应被资格覆盖为不推荐
     service = MatchReviewService(session_factory=factory, task_client=client)
 
     verdicts = await service.review_run(run_id)
 
-    assert all(v["verdict"] == "pending" for v in verdicts)
+    # 前置资格被拒直接判不推荐，并把原因写进风险点（不再含糊地标成「待核」）。
+    assert all(v["verdict"] == "reject" for v in verdicts)
+    assert all("前置资格未通过" in v["risks"][0] for v in verdicts)
+    assert all(v["basis"]["source"] == "eligibility" for v in verdicts)
+    assert all(v["basis"]["eligible"] is False for v in verdicts)
     assert client.prompts == []  # 未进入 AI 复核
 
 
@@ -182,6 +186,26 @@ async def test_review_run_covers_every_matched_row(factory):
 
 
 @pytest.mark.asyncio
+async def test_review_run_covers_runs_larger_than_any_cap(factory):
+    """60 条也要全量复核：不存在「超出配额未复核」，调用次数等于配对数。"""
+    run_id = _seed_many_results(factory, 60)
+    client = _FakeTaskClient()
+    service = MatchReviewService(session_factory=factory, task_client=client)
+
+    verdicts = await service.review_run(run_id)
+
+    assert len(verdicts) == 60
+    assert len(client.prompts) == 60
+    assert not any(v.get("skipped") for v in verdicts)
+    assert all(v["verdict"] == "recommend" for v in verdicts)
+    # 高分优先：即使中途取消，前 50 条也已出结论。
+    reviewed_ids = {v["match_result_id"] for v in verdicts}
+    with factory() as session:
+        all_ids = set(session.scalars(select(MatchResult.id).where(MatchResult.run_id == run_id)))
+    assert reviewed_ids == all_ids
+
+
+@pytest.mark.asyncio
 async def test_review_run_marks_failures_explicitly(factory):
     """单条失败必须显式可见：以前被静默写成 pending，用户只看到「没有结果」。"""
     run_id = _seed_reverse_run(factory)
@@ -196,7 +220,7 @@ async def test_review_run_marks_failures_explicitly(factory):
 
     assert all(v["failed"] is True for v in verdicts)
     assert all(v["error"] == "RuntimeError" for v in verdicts)
-    assert all("复核失败" in v["cautions"][0] for v in verdicts)
+    assert all("复核失败" in v["risks"][0] for v in verdicts)
 
 
 @pytest.mark.asyncio
@@ -215,4 +239,4 @@ async def test_review_run_marks_single_call_timeout(factory, monkeypatch):
 
     assert all(v["failed"] is True for v in verdicts)
     assert all(v["error"] == "TimeoutError" for v in verdicts)
-    assert all("复核超时" in v["cautions"][0] for v in verdicts)
+    assert all("复核超时" in v["risks"][0] for v in verdicts)

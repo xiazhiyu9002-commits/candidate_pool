@@ -48,6 +48,8 @@ class SchedulerService:
         sender_domains: set[str] | None = None,
         resume_gate: ResumeGate | None = None,
         daily_followup_service: DailyFollowupService | None = None,
+        soft_delete_service=None,
+        work_years_rollover=None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
@@ -59,6 +61,12 @@ class SchedulerService:
         self.sender_domains = sender_domains
         self.resume_gate = resume_gate
         self.daily_followup_service = daily_followup_service
+        self.soft_delete_service = soft_delete_service
+        self.work_years_rollover = work_years_rollover
+        # 软删除残留清理每个 UTC 日只跑一次，避免 5 分钟轮询里反复全表扫描。
+        self._last_purge_date = None
+        # 工作年限/年龄滚动刷新同样每上海日只跑一次（值未变时本就无写入）。
+        self._last_years_refresh_date = None
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20, mode: str = "hybrid"
@@ -121,6 +129,43 @@ class SchedulerService:
             return
         self.daily_followup_service.send_due_reports()
 
+    def purge_soft_deleted_tick(self) -> None:
+        """回收站过期物理清理（每 UTC 日一次）。
+
+        软删除（候选人/JD 置 ``deleted_at``）是早期行为，现已改为物理删除，
+        但回收站里可能仍有历史记录。这里按保留期做物理清理，避免长期堆积
+        —— 真实库曾积压 47 个岗位 + 208 个候选人无人清理。
+
+        清理走**单条删除服务**（见 ``SoftDeleteService.purge_expired``），
+        因此流程快照与解除关联的行为与手动删除一致。
+        """
+        if self.soft_delete_service is None:
+            return
+        today = datetime.now(timezone.utc).date()
+        if self._last_purge_date == today:
+            return
+        self._last_purge_date = today
+        removed = self.soft_delete_service.purge_expired()
+        if removed:
+            logging.getLogger(__name__).info("回收站过期清理：物理删除 %d 条", removed)
+
+    def refresh_work_years_tick(self) -> None:
+        """按连续口径滚动刷新工作年限、年龄与画像里的对应数字（每上海日一次）。
+
+        年限按 0.1 精度只在跨月时变化、年龄每年才变，因此绝大多数日次调用直接返回，
+        开销接近零。刷新同步候选人列、版本 JSON 与搜索索引。
+
+        **画像不做整段重生**：只就地替换画像里的总年限与年龄两个数字（``resumes/profile_text``），
+        因此不需要调用模型、不产生额度消耗，也不会覆盖使用者的措辞。
+        """
+        if self.work_years_rollover is None:
+            return
+        today = datetime.now(SHANGHAI).date()
+        if self._last_years_refresh_date == today:
+            return
+        self._last_years_refresh_date = today
+        self.work_years_rollover.refresh(today)
+
     def _next_report_target(self) -> datetime:
         """返回下一个待跟进报告发送时刻（上海时间 naive：09:00 早报 / 21:30 晚报）。"""
         now_sh = datetime.now(SHANGHAI).replace(tzinfo=None)
@@ -162,6 +207,8 @@ class SchedulerService:
                 operations: list[tuple[str, object]] = [
                     ("reminder_mail", self.send_reminder_mail),
                     ("backup", self.backup_tick),
+                    ("purge_soft_deleted", self.purge_soft_deleted_tick),
+                    ("refresh_work_years", self.refresh_work_years_tick),
                 ]
                 # 只有显式开启自动同步时，后台循环才拉取邮箱；手动 poll_mail 始终可用。
                 if self.mail_auto_sync:

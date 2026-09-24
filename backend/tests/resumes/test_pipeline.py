@@ -410,6 +410,51 @@ async def test_cancelling_pipeline_does_not_leave_revision_processing(tmp_path: 
         assert revision.error_code == "E_TASK_CANCELLED"
 
 
+class LocalFallbackResumeParser:
+    """模拟「没有可用快速解析路由」时的本地兜底解析器（`_RoutedResumeParser` 的形态）。"""
+
+    def uses_remote_ai(self) -> bool:
+        return False
+
+    async def parse_resume(self, text: str) -> ParsedResume:
+        return await FixedResumeParser().parse_resume(text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parser", "expected_route"),
+    [(LocalFallbackResumeParser(), "local"), (FixedResumeParser(), "remote")],
+)
+async def test_pipeline_records_which_parse_route_was_used(tmp_path: Path, parser, expected_route: str) -> None:
+    """实际走的解析路线必须写进抽取诊断。
+
+    真机证据（2026-09-22 智谱/火山两轮验收）：连接缺少快速解析角色时，解析会静默回退本地
+    确定性解析，任务 0.2~3.6 秒就「成功」，界面显示解析完成而画像为空，被误读成
+    「该供应商解析质量差」。路线可读之后这种降级才解释得通。
+    不认识 `uses_remote_ai` 的解析器按「远程」记录（失败开放，不凭空制造降级结论）。
+    """
+    engine = create_engine_for(tmp_path / "db" / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    store = BlobStore(tmp_path / "blobs", tmp_path / "temp")
+    with factory() as session:
+        ingested = ResumeIngestService(session, store).ingest(
+            IngestResume(filename="张三.pdf", content=make_pdf_bytes())
+        )
+
+    pipeline = ResumePipeline(
+        session_factory=factory,
+        blob_store=store,
+        parser=parser,
+        embedding_provider=FakeEmbeddingProvider(dimension=16),
+    )
+    await pipeline.run(ingested.revision_id)
+
+    with Session(engine) as session:
+        revision = session.get(ResumeRevision, ingested.revision_id)
+        assert revision.extraction_diagnostics["ai_parse_route"] == expected_route
+
+
 @pytest.mark.asyncio
 async def test_pipeline_sets_profile_metadata_on_first_parse(tmp_path: Path) -> None:
     """初次解析产生非空画像时，必须补全 source=ai、input_hash、stale=false。"""

@@ -57,6 +57,32 @@ def test_policy_and_input_upstream_errors_do_not_switch(body: str) -> None:
     assert error.category in (FailureCategory.POLICY, FailureCategory.INPUT)
 
 
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_throttle_and_server_bodies_do_not_override_the_status_code(status: int) -> None:
+    """状态码本身已是结论时，正文关键词不得改写分类。
+
+    真机证据（2026-09-22 火山引擎方舟）：模型配额用尽时返回的确切是
+
+        HTTP 429 {"error":{"code":"SetLimitExceeded",
+                  "message":"... has reached the set inference limit ... Exceeded ...",
+                  "type":"TooManyRequests"}}
+
+    其中的 "Exceeded" 命中输入类关键词 `exceed`，于是整个错误被归成 `E_API_INPUT`
+    （输入类、不可重试、不可切换）。后果不是「报错难懂」而是**静默降级**：
+    探测的限流串行重试不认识它 → 文本能力被判不可用 → 连接没有 FAST_TEXT 角色 →
+    简历解析回退到本地确定性解析，界面显示「解析成功」而画像为空。
+    """
+    body = ('{"error": {"code": "SetLimitExceeded", '
+            '"message": "has reached the set inference limit, Exceeded"}}')
+    error = map_http_error(status, error_body=body)
+    assert error.retryable is True
+    if status == 429:
+        assert error.code == "E_API_RATE_LIMIT"
+        assert error.category == FailureCategory.RATE_LIMIT
+    else:
+        assert error.category == FailureCategory.SERVER
+
+
 class PersonResult(BaseModel):
     name: str
 

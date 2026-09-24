@@ -7,11 +7,15 @@ test("imports a JD and exposes its matching action", async ({ page }) => {
   await page.goto("/");
 
   await page.getByText("JD 管理").click();
+  // 导入表单改成了弹层：先点「导入 JD」，内联的 JD 原文在旧版里是常驻的。
+  await page.getByRole("button", { name: "导入 JD" }).click();
   await page.getByLabel("JD 原文").fill("负责支付系统，3 年 Java，本科，金融");
   await page.getByRole("button", { name: "导入并解析" }).click();
   await expect(page.getByText("导入成功")).toBeVisible();
 
-  await expect(page.getByRole("heading", { name: "已导入 JD" })).toBeVisible();
+  // 旧版断言的是「已导入 JD」标题。现版：头部「共 N 个在招岗位」在解析完成前就会先计数，
+  // 真正代表列表可用的是「岗位列表 N 个」非零 + 行内「匹配」按钮出现。
+  await expect(page.getByText(/岗位列表 [1-9]\d* 个/)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "匹配", exact: true }).first()).toBeVisible();
 });
 

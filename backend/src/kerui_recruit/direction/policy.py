@@ -406,6 +406,40 @@ def render_career_taxonomy() -> str:
     return "\n".join(lines)
 
 
+def direction_field_for_code(code: str) -> str | None:
+    """枚举 code 属于哪个筛选字段：职业大类 / 职业细分 / 业务方向；未命中返回 None。
+
+    查询解析用：LLM 输出的方向 code 必须落回正确的硬筛选字段，否则丢掉。
+    """
+    text = str(code or "").strip()
+    if not text:
+        return None
+    if text in CAREER_DIRECTION_LABELS:
+        return "career_directions"
+    if text in SPECIALIZATION_LABELS:
+        return "career_specializations"
+    if text in BUSINESS_DIRECTION_LABELS:
+        return "business_directions"
+    return None
+
+
+_DIRECTION_LABEL_TO_CODE: dict[str, str] = {
+    **{label.casefold(): code for code, label in CAREER_DIRECTION_LABELS.items()},
+    **{label.casefold(): code for code, label in SPECIALIZATION_LABELS.items()},
+    **{label.casefold(): code for code, label in BUSINESS_DIRECTION_LABELS.items()},
+}
+
+
+def normalize_direction_value(value: str) -> str | None:
+    """方向字段的中文标签 / code → 合法 code；未知值返回 None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if direction_field_for_code(text) is not None:
+        return text
+    return _DIRECTION_LABEL_TO_CODE.get(text.casefold())
+
+
 def render_business_taxonomy() -> str:
     """渲染业务方向词表，供提示词使用（单一数据源）。"""
     return "、".join(f"{code}（{BUSINESS_DIRECTION_LABELS[code]}）" for code in BUSINESS_DIRECTIONS)

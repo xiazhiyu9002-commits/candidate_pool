@@ -127,43 +127,53 @@ def replay_with_k(snapshot: dict, k: int, top_n: int) -> dict[str, list[str]]:
     return result
 
 
-def evaluate(snapshot: dict, top_n: int, ks: list[int]) -> None:
-    baseline: dict[str, list[str]] = {}
-    max_k = max(ks)
-    for qid, entry in snapshot.items():
-        items = entry["items"]
-        head = [it for it in items if it["rrf_rank"] < max_k and it["rerank"] is not None]
-        head.sort(key=lambda it: (-it["rerank"], it["rrf_rank"]))
-        tail = [it for it in items if it["rrf_rank"] >= max_k or it["rerank"] is None]
-        seen: set[str] = set()
-        picked: list[str] = []
-        for it in list(head) + tail:
-            if it["alias"] in seen:
-                continue
-            seen.add(it["alias"])
-            picked.append(it["alias"])
-            if len(picked) >= top_n:
-                break
-        baseline[qid] = picked
+def evaluate(snapshot: dict, top_n: int, ks: list[int], reference_k: int) -> None:
+    """用「真实重排分」当裁判，衡量只重排前 K 条时返回结果的损失。
+
+    注意：**不能只看集合重合**。当 top_n == K 时返回的就是整个 head，集合恒等，
+    重合率会假报 1.0000，掩盖真实的顺序劣化。因此这里以 ``reference_k``
+    （把池子里全部候选都重排）为「上限参考」，对每个 K 计算：
+
+    - 平均真实重排分：把返回的 top_n 用**全量重排分**打平均，与上限参考比。
+      这是顺序敏感指标 —— 顺序错了、或换进了更差的人，分数都会掉。
+    - 相对上限的分数保持率：``S_K / S_ref``。
+    - 集合覆盖率：返回集合里有多少来自上限参考的 top_n。
+    """
+    true_score = {
+        qid: {it["alias"]: it["rerank"] for it in e["items"] if it["rerank"] is not None}
+        for qid, e in snapshot.items()
+    }
+
+    def build(k: int) -> dict[str, list[str]]:
+        return replay_with_k(snapshot, k, top_n)
+
+    reference = build(reference_k)
+
+    def mean_score(qid: str, aliases: list[str]) -> float:
+        table = true_score[qid]
+        vals = [table[a] for a in aliases if a in table]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    ref_scores = {qid: mean_score(qid, ref) for qid, ref in reference.items()}
+    overall_ref = sum(ref_scores.values()) / len(ref_scores)
 
     print()
-    print(f"=== 重排文档数回放（top_n={top_n}，基准 K={max_k}）===")
-    print(f"{'K':>6}{'恰等于基准集合':>16}{'平均重合率':>12}{'平均新增':>10}{'平均丢失':>10}")
+    print(f"=== 重排文档数回放（返回 top_n={top_n}，上限参考 K={reference_k}）===")
+    print(f"{'K':>6}{'平均真实重排分':>16}{'分数保持率':>12}{'集合覆盖率':>12}{'平均丢失':>10}")
     for k in ks:
-        got = replay_with_k(snapshot, k, top_n)
-        exact = 0
-        overlaps, adds, losses = [], [], []
-        for qid, base in baseline.items():
-            g = set(got[qid])
-            b = set(base)
-            if g == b:
-                exact += 1
-            overlaps.append(len(g & b) / max(1, len(b)))
-            adds.append(len(g - b))
+        got = build(k)
+        scores, cover, losses = [], [], []
+        for qid, ref in reference.items():
+            scores.append(mean_score(qid, got[qid]))
+            g, b = set(got[qid]), set(ref)
+            cover.append(len(g & b) / max(1, len(b)))
             losses.append(len(b - g))
-        n = len(baseline)
-        print(f"{k:>6}{f'{exact}/{n}':>16}{sum(overlaps) / n:>12.4f}"
-              f"{sum(adds) / n:>10.2f}{sum(losses) / n:>10.2f}")
+        n = len(reference)
+        avg = sum(scores) / n
+        print(f"{k:>6}{avg:>16.4f}{avg / overall_ref:>12.4f}"
+              f"{sum(cover) / n:>12.4f}{sum(losses) / n:>10.2f}")
+    print(f"\n上限参考（K={reference_k}）平均真实重排分 = {overall_ref:.4f}")
+    print("注：'集合覆盖率' 在 K=top_n 时会失真（返回即全部 head，集合恒等），以「平均真实重排分」为准。")
 
 
 def main() -> None:
@@ -174,6 +184,8 @@ def main() -> None:
     parser.add_argument("--qids", default="", help="逗号分隔；留空=全部 20 条")
     parser.add_argument("--top-n", type=int, default=50)
     parser.add_argument("--ks", default="50,80,100,150,200,250")
+    parser.add_argument("--reference-k", type=int, default=RERANK_DOCS,
+                        help="上限参考：把池子里这么多条都重排（默认=采集时的全量）")
     args = parser.parse_args()
 
     if args.collect:
@@ -187,7 +199,7 @@ def main() -> None:
     snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     ks = [int(x) for x in args.ks.split(",") if x.strip()]
     print(f"快照查询数={len(snapshot)} / 池子={POOL} / 已重排条数={RERANK_DOCS}")
-    evaluate(snapshot, args.top_n, ks)
+    evaluate(snapshot, args.top_n, ks, args.reference_k)
 
 
 if __name__ == "__main__":

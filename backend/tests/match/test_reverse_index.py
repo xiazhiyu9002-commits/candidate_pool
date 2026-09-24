@@ -102,6 +102,18 @@ async def test_reverse_rejects_candidate_on_hold(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reverse_excludes_jobs_whose_year_window_excludes_candidate(tmp_path):
+    """年限硬窗口 [n-1, 2n] 在反向匹配逐 JD 生效：20 年经验不再匹配「3 年以上」岗位。"""
+    factory, search = setup(tmp_path)
+    index = jd_index(tmp_path)
+    with factory.begin() as session:
+        session.get(Candidate, "person").total_years = Decimal("20")
+    records = await MatchService(session_factory=factory, search_service=search,
+                                 jd_index=index).reverse_match_candidate("person")
+    assert records == []
+
+
+@pytest.mark.asyncio
 async def test_reverse_rejects_zero_must_skill(tmp_path):
     factory, search = setup(tmp_path)
     index = jd_index(tmp_path)
@@ -324,7 +336,7 @@ async def test_reverse_all_open_jobs_pending_sync_reports_unavailable(tmp_path):
 
 
 def test_candidate_representation_separates_keyword_and_vector_text(tmp_path):
-    """反向匹配的 keyword 用结构化关键词，vector 用 AI 画像/向量文本，二者不同。"""
+    """反向匹配：content 保留完整证据文本，query 只含技术+业务关键词，vector 用 AI 画像。"""
     engine = create_engine_for(tmp_path / "test.sqlite")
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -347,11 +359,17 @@ def test_candidate_representation_separates_keyword_and_vector_text(tmp_path):
     search = HybridSearchService(index=index, embedding_provider=FixedEmbedding(),
                                  reranker_provider=FakeRerankerProvider())
     service = MatchService(session_factory=factory, search_service=search)
-    hit, _ = service._candidate_representation("person")
+    hit, _, query = service._candidate_representation("person")
+    # content 仍是完整关键词文本：EXCLUDE/职责证据校验依赖它，不能被 query 收敛削弱。
     assert "Python" in hit.content
     assert "腾讯科技" in hit.content
     assert hit.vector_text and "资深后端工程师" in hit.vector_text
     assert hit.content != hit.vector_text
+    # query 只保留技术与业务两类关键词：姓名/公司/城市等筛选字段不进 FTS。
+    assert "Python" in query and "Java" in query
+    for filtered in ("腾讯科技", "张三", "上海"):
+        assert filtered not in query
+    assert query != hit.content
 
 
 @pytest.mark.asyncio
@@ -409,9 +427,10 @@ async def test_reverse_match_passes_mode_specific_query_texts(tmp_path):
         return next(c for c in calls if c["mode"] == mode)
 
     keyword_call, vector_call, hybrid_call = first("keyword"), first("vector"), first("hybrid")
-    # keyword 只用结构化关键词，不传向量文本。
+    # keyword 只用技术/业务关键词，不传向量文本；姓名/公司等筛选字段不进 FTS。
     assert keyword_call["mode"] == "keyword"
-    assert "Python" in keyword_call["query"] and "腾讯科技" in keyword_call["query"]
+    assert "Python" in keyword_call["query"]
+    assert "腾讯科技" not in keyword_call["query"]
     assert keyword_call["vector_query"] is None
     # vector 用 AI 画像/向量文本。
     assert vector_call["mode"] == "vector"
@@ -419,5 +438,6 @@ async def test_reverse_match_passes_mode_specific_query_texts(tmp_path):
     assert vector_call["vector_query"] is None
     # hybrid 分别用关键词做 FTS、向量文本做 embedding。
     assert hybrid_call["mode"] == "hybrid"
-    assert "Python" in hybrid_call["query"] and "腾讯科技" in hybrid_call["query"]
+    assert "Python" in hybrid_call["query"]
+    assert "腾讯科技" not in hybrid_call["query"]
     assert hybrid_call["vector_query"] and "资深后端工程师" in hybrid_call["vector_query"]

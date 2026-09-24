@@ -168,8 +168,10 @@ Case H（Pydantic 有效但业务不完整的简历 → 沿用 `E_PARSE_INCOMPLE
 - 打包命令：`py -3.12 -m PyInstaller --noconfirm kerui-recruit-sidecar.spec`
 - 可执行文件路径：`dist/kerui-recruit-sidecar.exe`
 - SHA-256：`20C8C95DEBF398AABCC6BFB968C87D008E2B23E0947A77E3E25BF7A65F96B9C0`
-- 离线冒烟：以临时数据根目录、清空 `KERUI_AI_CATALOG_URL`/`KERUI_AI_CATALOG_PUBLIC_KEY_B64` 启动打包 sidecar，`GET /api/ai/catalog` 返回 `default=deepseek`、`version=1`、7 个入口 `deepseek,kimi_open,kimi_code,qwen,zhipu,siliconflow,custom_openai`（无网络调用，资源自 bundled datas 解析）。
-- `test_sidecar.py::test_builtin_catalog_resolves_as_packaged_resource` 验证内置目录经 `importlib.resources` 可解析且含七个入口。
+- 离线冒烟：以临时数据根目录、清空 `KERUI_AI_CATALOG_URL`/`KERUI_AI_CATALOG_PUBLIC_KEY_B64` 启动打包 sidecar，`GET /api/ai/catalog` 返回 `default=deepseek`、9 个入口 `deepseek,kimi_open,kimi_code,qwen,qwen_code,zhipu,zhipu_code,siliconflow,custom_openai`（无网络调用，资源自 bundled datas 解析）。
+- `test_sidecar.py::test_builtin_catalog_resolves_as_packaged_resource` 验证内置目录经 `importlib.resources` 可解析且含九个入口。
+
+> 2026-09-20 更新：内置目录新增 `qwen_code`（阿里百炼 Coding Plan）与 `zhipu_code`（智谱 GLM Coding Plan），`kimi_code` 模型改为订阅端点的 `k3`，目录 `version` 由 5 递增到 6；连接数量上限（原 `max_length=2`）已移除，列表顺序即主备顺序。上文 SHA-256 与 `version=1` 为上一轮打包的存档证据，未重新打包。
 
 ## 6. 密钥扫描
 

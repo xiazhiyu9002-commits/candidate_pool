@@ -164,13 +164,13 @@ async def test_e_kimi_code_not_used_for_background(tmp_path):
         ),
         AiConnection(
             connection_id="c2", provider_id="kimi_code", display_name="Kimi Code",
-            api_key=SecretStr("sk"), models={ModelRole.FAST_TEXT: "kimi-for-coding"},
+            api_key=SecretStr("sk"), models={ModelRole.FAST_TEXT: "k3"},
             probed_roles=frozenset({ModelRole.FAST_TEXT}),
         ),
     ]))
     bg = manager.task_client(TaskKind.RESUME_PARSE, ModelRole.FAST_TEXT, ExecutionContext.BACKGROUND)
     await bg.complete_text([{"role": "user", "content": "a"}])
-    assert "kimi-for-coding" not in calls
+    assert "k3" not in calls
 
 
 @pytest.mark.asyncio
@@ -242,5 +242,5 @@ async def test_g_deadline_exhaustion_falls_back_to_original_query(tmp_path):
     # 共享 deadline 已耗尽：改写器应回退原查询，且主/备均不发起任何远程调用。
     result = await rewriter.rewrite("JS 交易系统", deadline_monotonic=time.monotonic() - 1)
     assert result.query == "JS 交易系统"
-    assert result.status == "unavailable"
+    assert result.outcome == "unavailable"
     assert calls == []  # 主服务与备用服务均为 0 次调用

@@ -10,6 +10,8 @@ export interface BdAssistantPageProps {
   onBdFollowUpChange: (value: string) => void;
   bdSessionId: string | null;
   bdLeads: BdAgentLead[];
+  /** 非空表示本轮被降级或失败；用于把「确实没搜到」和「这一步失败了」分开显示。 */
+  bdDegradedReason: string | null;
   bdLoading: boolean;
   bdProgress: BdProgress | null;
   bdPoolByLead: Record<string, BdPoolCandidate[]>;
@@ -26,7 +28,7 @@ export interface BdAssistantPageProps {
 
 export function BdAssistantPage({
   bdQuery, onBdQueryChange, bdFollowUp, onBdFollowUpChange, bdSessionId, bdLeads,
-  bdLoading, bdProgress, bdPoolByLead, bdPoolBusyId, collapsedPool,
+  bdDegradedReason, bdLoading, bdProgress, bdPoolByLead, bdPoolBusyId, collapsedPool,
   onSearchBd, onFollowUpBd, onLookupPool, onTogglePoolCollapse, onOpenExternal, onCopyLink, onPreviewResume,
 }: BdAssistantPageProps) {
   return (
@@ -46,7 +48,17 @@ export function BdAssistantPage({
       )}
 
       {bdLeads.length === 0 ? (
-        <div className="empty-state"><strong>暂无线索</strong><p>输入需求开始深度检索，系统会规划搜索、抓取页面并综合出带证据的线索。</p></div>
+        // 「确实没搜到」和「综合这一步失败了」是两回事：前者换关键词就行，
+        // 后者要去看 AI 配置。降级时把原因显示出来，不再一律显示「暂无线索」。
+        bdDegradedReason ? (
+          <div className="empty-state" role="alert">
+            <strong>线索综合失败</strong>
+            <p>{bdDegradedReason}</p>
+            <p className="muted">请检查 AI 供应商配置（含思考模型是否可用），或稍后重试。</p>
+          </div>
+        ) : (
+          <div className="empty-state"><strong>暂无线索</strong><p>输入需求开始深度检索，系统会规划搜索、抓取页面并综合出带证据的线索。</p></div>
+        )
       ) : (
         <div className="card">
           <div className="card__head">

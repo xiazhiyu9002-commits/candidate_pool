@@ -44,6 +44,7 @@ desktop/testData/
 # 真实候选人隐私数据（简历 PDF），禁止入库
 1/
 1.zip
+测试数据/
 
 # 本地运行数据目录：含真实简历库、向量索引与 config/encryption.key，禁止入库
 .dev-data/

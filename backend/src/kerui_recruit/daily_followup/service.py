@@ -11,6 +11,7 @@ from kerui_recruit.db.models import (
     CandidateJobCase,
     CaseEvent,
     DailyFollowupState,
+    DailyTodoCheck,
     Jd,
 )
 
@@ -126,6 +127,8 @@ class DailyFollowupService:
                             "title": jd.title,
                             "name": candidate.display_name,
                             "time": rec_sh.strftime("%Y-%m-%d"),
+                            # 供「今日待办」勾选用的稳定键（同一 case 只会落在四类桶之一）。
+                            "case_id": case.id,
                         })
                 elif entered:
                     latest = entered[-1]
@@ -138,6 +141,7 @@ class DailyFollowupService:
                         "title": jd.title,
                         "name": candidate.display_name,
                         "time": ent_sh.strftime("%Y-%m-%d %H:%M"),
+                        "case_id": case.id,
                     }
                     if ent_sh.date() == tomorrow:
                         tomorrow_interview.append(item)
@@ -152,6 +156,30 @@ class DailyFollowupService:
             "today_interview": today_interview,
             "interview_no_feedback": interview_no_feedback,
         }
+
+    def checked_item_keys(self, day: str) -> set[str]:
+        """返回指定日期（上海 ``YYYY-MM-DD``）已勾选的待办项键。
+
+        勾选按天存储：跨日自然查不到，即回到未勾选，因此每日重置不需要定时任务。
+        """
+        with self.session_factory() as session:
+            return set(session.scalars(
+                select(DailyTodoCheck.item_key).where(DailyTodoCheck.check_date == day)
+            ).all())
+
+    def set_checked(self, *, day: str, item_key: str, done: bool) -> None:
+        """勾选或取消勾选某一项（幂等：重复勾选不会产生重复记录）。"""
+        with self.session_factory() as session, session.begin():
+            existing = session.scalar(
+                select(DailyTodoCheck).where(
+                    DailyTodoCheck.check_date == day,
+                    DailyTodoCheck.item_key == item_key,
+                )
+            )
+            if done and existing is None:
+                session.add(DailyTodoCheck(check_date=day, item_key=item_key))
+            elif not done and existing is not None:
+                session.delete(existing)
 
     def _build_email(self, data: dict) -> str | None:
         if not any(data.values()):

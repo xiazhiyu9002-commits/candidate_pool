@@ -14,18 +14,19 @@ import { mergeAiConnection } from "./ai/merge";
 import "./styles.css";
 import "./cases/workflow.css";
 import { CaseDrawer } from "./cases/CaseDrawer";
+import { CandidateReminderDialog } from "./reminders/CandidateReminderDialog";
 import { ResumeReviewDrawer } from "./resumes/ResumeReviewDrawer";
 import { CandidateEducationEditor } from "./components/CandidateEducationEditor";
 import { CandidateProfileEditor } from "./components/CandidateProfileEditor";
 import { CandidateParsedEditor } from "./components/CandidateParsedEditor";
 import { JdParsedEditor } from "./components/JdParsedEditor";
-import { JdProfileEditor, type JdExactConstraint } from "./components/JdProfileEditor";
+import { JdProfileEditor, type JdExactConstraint, type JdProfileYears } from "./components/JdProfileEditor";
 import { CANDIDATE_COLUMNS_DEFAULT, CANDIDATE_COLUMNS_ORDER_DEFAULT, type CandidateColumnKey } from "./components/CandidateTable";
 import { HoverText } from "./components/ui";
 import { CareerDirectionPicker } from "./components/DirectionPicker";
 import { EMPTY_SEARCH_FILTER_DRAFT, TalentPoolPage, type SearchFilterDraft } from "./pages/TalentPoolPage";
-import type { CandidateKeywordOperator, CandidateSearchOptions } from "./api/client";
-import { JdManagementPage, reviewVerdictCounts, reviewVerdictLabel, reviewVerdictsByResultId, sortReviewItems, type ReviewVerdictItem } from "./pages/JdManagementPage";
+import type { CandidateKeywordOperator, CandidateSearchOptions, ProfileGenerationProgress } from "./api/client";
+import { JdManagementPage, reviewMatchLines, reviewVerdictCounts, reviewVerdictLabel, reviewVerdictsByResultId, sortReviewItems, type ReviewVerdictItem } from "./pages/JdManagementPage";
 import { RecruitmentPage } from "./pages/RecruitmentPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { BdAssistantPage } from "./pages/BdAssistantPage";
@@ -45,9 +46,26 @@ const DEGRADED_REASON_LABELS: Record<string, string> = {
   LIVE_VALIDATION_UNAVAILABLE: "实时校验暂不可用",
 };
 
+/** 与后端 `search/service.py` 里 `f"FILTER_RELAXED:{name}"` 的前缀保持一致。 */
+const RELAXED_REASON_PREFIX = "FILTER_RELAXED:";
+
+/** 硬筛筛空后退化为软排的字段名 → 中文；与后端 `RELAXABLE_FIELDS` 同名。 */
+const RELAXED_FIELD_LABELS: Record<string, string> = {
+  company: "公司", companies: "公司", title: "职位",
+  career_directions: "职业方向", career_specializations: "职业细分",
+  business_directions: "业务方向",
+};
+
 function describeDegraded(reasons: string[]): string {
   const labels = reasons
-    .map((reason) => DEGRADED_REASON_LABELS[reason] ?? reason)
+    .map((reason) => {
+      // 「硬筛筛空 → 退化为软排」带字段名，逐条说清是哪条条件不再过滤。
+      if (reason.startsWith(RELAXED_REASON_PREFIX)) {
+        const field = reason.slice(RELAXED_REASON_PREFIX.length);
+        return `${RELAXED_FIELD_LABELS[field] ?? field}条件无匹配，已改为参与排序（不再过滤）`;
+      }
+      return DEGRADED_REASON_LABELS[reason] ?? reason;
+    })
     .filter(Boolean);
   return labels.length > 0 ? labels.join("、") : reasons.join("、");
 }
@@ -112,8 +130,12 @@ export interface CandidateSearchItem {
   missing_skills?: string[];
   eligibility?: string;
   match_tier?: string;
+  /** 沟通记录：候选人级自由文本，不在 parsed_data 里，也不参与画像与索引。 */
+  communication_note?: string | null;
   direction_reason?: string;
   evidence?: string[];
+  // 业务方向是否一致（True/False/None）：一致者按 80/20 置顶，不淘汰。
+  business_match?: boolean | null;
 }
 
 export interface CandidateSearchResult {
@@ -125,11 +147,42 @@ export interface CandidateSearchResult {
   query_plan?: {
     operator: "smart" | "and" | "or";
     rewrite_requested: boolean;
-    rewrite_status: "disabled" | "not_applicable" | "success" | "unavailable";
+    rewrite_status: "disabled" | "not_applicable" | "unchanged" | "success" | "rejected" | "unavailable";
     semantic_query: string | null;
+    // 附加诊断字段：applied 表示改写向量是否参与召回，fallback_reason 只描述技术性原因。
+    rewrite_applied?: boolean;
+    rewrite_fallback_reason?: "provider_error" | null;
     parsed_conditions?: { field: string; value: string; confidence: string }[];
     retained_keywords?: string;
+    // AI 解析回显：解析来源、交给 FTS 的词条、未识别残句、以及合并后的最终生效条件。
+    parsed_plan_source?: "rule" | "llm" | "mixed";
+    keyword_terms?: string;
+    unparsed_terms?: string[];
+    effective_conditions?: SearchConditionView[];
+    /**
+     * 被判定「硬筛筛空」而退化为软排的条件字段名：它们仍在生效条件里，但只参与
+     * 排序、不再过滤。界面需要据此说明「为什么结果比条件看起来更宽」。
+     */
+    relaxed_conditions?: string[];
   } | null;
+}
+
+/** 生效硬条件的来源：面板手填 > AI 解析 > 规则解析。 */
+export type SearchConditionSource = "panel" | "llm" | "rule";
+
+export interface SearchConditionView {
+  field: string;
+  value: string;
+  confidence: string;
+  source?: SearchConditionSource;
+}
+
+/** AI 解析的可解释回显：让用户看到「AI 有没有读懂」。 */
+export interface SearchPlanEcho {
+  source: "rule" | "llm" | "mixed";
+  keywordTerms: string;
+  semanticQuery: string | null;
+  unparsedTerms: string[];
 }
 
 /** 搜索侧 AI 复核：按搜索条件产出亮点 / 风险点，结论按查询+候选人落库。 */
@@ -158,6 +211,8 @@ export interface CandidateSearchFilters {
   phone?: string;
   gender?: string;
   name?: string;
+  /** 沟通文本：子串匹配候选人沟通记录（后端在 SQLite 层过滤，不进索引）。 */
+  communication_note?: string;
   company?: string;
   title?: string;
   school?: string;
@@ -189,6 +244,8 @@ export interface CandidateListItem {
   parsed_data: ParsedResumeData | null;
   error_code?: string | null;
   error_message?: string | null;
+  /** 沟通记录：候选人级自由文本，不在 parsed_data 里，也不参与画像与索引。 */
+  communication_note?: string | null;
 }
 
 export interface CandidatePage {
@@ -405,6 +462,10 @@ export interface MatchRun {
   status?: string;
   empty_reason?: string | null;
   degraded_reasons?: string[];
+  /** 已下推为检索过滤的 JD 硬条件（含原文依据）。 */
+  hard_filters?: { kind: string; alternatives: string[]; source_text: string }[];
+  /** 安全阀触发放宽掉的硬条件；非空表示结果不满足这些条件。 */
+  relaxed?: string[];
 }
 
 export interface BatchMatchResult {
@@ -452,6 +513,8 @@ export interface MatchCandidateItem {
   ai_category: string | null;
   parsed_data: JdParsedData | null;
   source_text: string | null;
+  // 业务方向是否一致：一致者按 80/20 置顶展示（不淘汰）。
+  business_match?: boolean | null;
 }
 
 export interface CandidateMatchResult {
@@ -734,6 +797,8 @@ export interface BdAgentLead {
 export interface BdAgentQueryResult {
   session_id: string;
   leads: BdAgentLead[];
+  /** 非空表示这一轮被降级/失败（如线索综合超时）；空结果据此与「确实没搜到」区分。 */
+  degraded_reason: string | null;
 }
 
 export interface BdProgress {
@@ -743,8 +808,9 @@ export interface BdProgress {
 
 export interface CaseItem {
   id: string;
-  candidate_id: string;
-  jd_id: string;
+  // 候选人或岗位被物理删除后置空，此时名称回落到快照字段。
+  candidate_id: string | null;
+  jd_id: string | null;
   stage: string;
   note: string | null;
   candidate_name?: string | null;
@@ -752,6 +818,8 @@ export interface CaseItem {
   jd_title?: string | null;
   can_advance?: boolean;
   blocked_reason?: string | null;
+  candidate_deleted?: boolean;
+  jd_deleted?: boolean;
   last_event?: string | null;
   last_event_at?: string | null;
 }
@@ -842,11 +910,26 @@ export interface DailyFollowupItem {
   title: string;
   date?: string;
   time?: string;
+  /** 勾选记录的稳定键（形如 `followup:<case_id>`），与展示字段无关。 */
+  item_key: string;
+  /** 今天是否已处理；不代表任务完成，次日自动重置。 */
+  done: boolean;
 }
 
 export interface DailyFollowupToday {
   followup: DailyFollowupItem[];
   interview: DailyFollowupItem[];
+  /** 「我的提醒」：使用者从人才库建立的待办，无日期，勾选即完成并移出。 */
+  reminders: CandidateReminderItem[];
+}
+
+export interface CandidateReminderItem {
+  id: string;
+  candidate_id: string;
+  /** 建立时的人名快照：候选人改名或删除后仍显示这个名字。 */
+  name: string;
+  content: string;
+  done: boolean;
 }
 
 export interface ReverseMatchItem {
@@ -990,8 +1073,8 @@ export interface RecruitmentApi {
   updateJdStatus(jdId: string, status: string): Promise<{ jd_id: string; status: string }>;
   updateJdField(jdId: string, field: string, value: unknown, extra?: { points?: ProfilePointData[]; compact?: string | null }): Promise<{ jd_id: string; revision_id: string; field: string; value: unknown }>;
   updateJdParsed(jdId: string, parsedData: JdParsedData): Promise<{ jd_id: string; revision_id: string; field: string; value: unknown }>;
-  regenerateJdProfile(jdId: string, instruction?: string): Promise<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string; constraints?: JdExactConstraint[] }>;
-  parseJdConstraints(sourceText: string): Promise<{ constraints: JdExactConstraint[] }>;
+  regenerateJdProfile(jdId: string, instruction?: string, onStage?: (progress: ProfileGenerationProgress) => void): Promise<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string; constraints?: JdExactConstraint[] }>;
+  parseJdConstraints(sourceText: string): Promise<{ constraints: JdExactConstraint[]; min_years: number | null; years_stated: boolean }>;
   matchJd(revisionId: string, limit?: number, mode?: "keyword" | "vector" | "hybrid"): Promise<MatchRun>;
   startAiReview(runId: string, reasoning?: boolean): Promise<{ review_id: string; status: string }>;
   getAiReview(runId: string): Promise<{ status: string; progress: number; result_ref: string | null; error_message: string | null }>;
@@ -1016,7 +1099,7 @@ export interface RecruitmentApi {
   searchLeadsForCandidate(candidateId: string, limit?: number): Promise<BdLead[]>;
   updateLeadStatus(leadId: string, status: string, note?: string): Promise<BdLead>;
   runBdAgent(query: string, kind?: string, limit?: number): Promise<BdAgentQueryResult>;
-  runBdAgentStream(query: string, kind?: string, limit?: number, onProgress?: (progress: BdProgress) => void): Promise<BdAgentQueryResult>;
+  runBdAgentStream(query: string, kind?: string, limit?: number, onProgress?: (progress: BdProgress) => void, onLeads?: (leads: BdAgentLead[]) => void): Promise<BdAgentQueryResult>;
   followUpBdAgent(sessionId: string, query: string, limit?: number): Promise<BdAgentQueryResult>;
   lookupPool(leadId: string): Promise<BdPoolCandidate[]>;
   createCase(candidateId: string, jdId: string): Promise<CaseItem>;
@@ -1036,12 +1119,16 @@ export interface RecruitmentApi {
   dashboardTrend(granularity: string, filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<DashboardTrendItem[]>;
   dashboardExport(filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<void>;
   dailyFollowupToday(): Promise<DailyFollowupToday>;
+  checkDailyTodo(input: { item_key: string; done: boolean }): Promise<{ date: string; item_key: string; done: boolean }>;
+  createCandidateReminder(input: { candidate_id: string; content: string }): Promise<CandidateReminderItem>;
+  completeCandidateReminder(reminderId: string): Promise<CandidateReminderItem>;
   reverseMatch(candidateId: string, mode?: "keyword" | "vector" | "hybrid"): Promise<ReverseMatchItem[]>;
   getCandidateContact(candidateId: string): Promise<CandidateContact>;
   updateCandidateContact(candidateId: string, input: { email: string | null; phone: string | null }): Promise<CandidateContact>;
   updateCandidateField(candidateId: string, field: string, value: unknown, extra?: { points?: ProfilePointData[]; compact?: string | null }): Promise<{ candidate_id: string; revision_id: string; field: string; value: unknown }>;
+  updateCommunicationNote(candidateId: string, note: string): Promise<{ candidate_id: string; communication_note: string | null }>;
   updateCandidateParsed(candidateId: string, parsedData: ParsedResumeData): Promise<{ candidate_id: string; revision_id: string; updated_fields: string[] }>;
-  regenerateCandidateProfile(candidateId: string, instruction?: string): Promise<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string }>;
+  regenerateCandidateProfile(candidateId: string, instruction?: string, onStage?: (progress: ProfileGenerationProgress) => void): Promise<{ generated: boolean; summary?: string; points?: ProfilePointData[]; compact?: string | null; input_hash?: string }>;
   deleteCandidate(candidateId: string): Promise<{ candidate_id: string; deleted: boolean }>;
   deleteJd(jdId: string): Promise<{ jd_id: string; deleted: boolean }>;
   bulkDeleteCandidates(candidateIds: string[]): Promise<{ results: { entity_id: string; ok: boolean; error: string | null; extra: Record<string, unknown> }[]; succeeded: number; failed: number }>;
@@ -1198,6 +1285,22 @@ function splitList(text: string): string[] {
   return text.split(/[、,，/]/).map((s) => s.trim()).filter(Boolean);
 }
 
+/** 生效条件字段 → 精确筛选面板草稿字段；缺失表示面板没有对应项（如多值公司），只能整条移除。 */
+const CONDITION_DRAFT_KEYS: Record<string, keyof SearchFilterDraft> = {
+  min_years: "minYears", max_years: "maxYears", min_age: "minAge", max_age: "maxAge",
+  highest_degree: "degree", locations: "locations", preferred_locations: "preferredLocations",
+  school_level: "schoolLevel", max_qs_rank: "maxQsRank", exclude_skills: "excludeSkills",
+  phone: "phone", gender: "gender", name: "name", company: "company", title: "title",
+  communication_note: "communicationNote", school: "school", school_region: "schoolRegion", career_directions: "careerDirections",
+  career_specializations: "careerSpecializations", business_directions: "businessDirections",
+};
+
+/** 后端以列表形式接收的筛选字段：压掉它们时要下发空数组而不是 null。 */
+const CONDITION_LIST_FIELDS = new Set([
+  "locations", "preferred_locations", "exclude_skills", "specializations",
+  "career_directions", "career_specializations", "business_directions", "companies",
+]);
+
 function patchParsed(parsed: ParsedResumeData | null, field: string, value: unknown): ParsedResumeData {
   const next = { ...(parsed ?? {}) } as ParsedResumeData;
   (next as Record<string, unknown>)[field] = value;
@@ -1258,6 +1361,12 @@ export function App({ api }: { api: RecruitmentApi }) {
   useEffect(() => {
     localStorage.setItem("search-body:v1", String(searchBody));
   }, [searchBody]);
+  const [parseEnabled, setParseEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("search-parse-enabled:v1") === "true";
+  });
+  useEffect(() => {
+    localStorage.setItem("search-parse-enabled:v1", String(parseEnabled));
+  }, [parseEnabled]);
   const [visibleColumns, setVisibleColumns] = useState<Record<CandidateColumnKey, boolean>>(() => {
     try {
       const saved = localStorage.getItem("candidate-table-columns:v1");
@@ -1321,9 +1430,9 @@ export function App({ api }: { api: RecruitmentApi }) {
     setProfileEditor(null);
   }
 
-  async function regenerateProfile(instruction = "") {
+  async function regenerateProfile(instruction = "", onStage?: (progress: ProfileGenerationProgress) => void) {
     if (!profileEditor) return null;
-    const result = await api.regenerateCandidateProfile(profileEditor.candidateId, instruction);
+    const result = await api.regenerateCandidateProfile(profileEditor.candidateId, instruction, onStage);
     const summary = result.summary ?? null;
     // 仅更新本地预览，不落库、不重建索引、不更新列表；由「保存」按钮提交。
     setProfileEditor((cur) => (cur ? { ...cur, summary, source: "ai", stale: false, points: result.points, compact: result.compact ?? null } : cur));
@@ -1354,7 +1463,16 @@ export function App({ api }: { api: RecruitmentApi }) {
   }
   const [results, setResults] = useState<CandidateSearchItem[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
-  const [searchConditions, setSearchConditions] = useState<{ field: string; value: string; confidence: string }[]>([]);
+  const [searchConditions, setSearchConditions] = useState<SearchConditionView[]>([]);
+  /** 硬筛筛空、已退化为软排的条件字段名（后端 `query_plan.relaxed_conditions`）。 */
+  const [relaxedSearchFields, setRelaxedSearchFields] = useState<string[]>([]);
+  /** AI 解析回显（词条 / 语义查询 / 未识别片段），仅作排障与调优展示。 */
+  const [searchPlanEcho, setSearchPlanEcho] = useState<SearchPlanEcho | null>(null);
+  /**
+   * 用户手动删掉的生效条件：面板里没有值时随请求下发显式空值，
+   * 让后端「显式值优先」把文本/AI 解析出的同类条件一起压掉（否则下次搜索会重新冒出来）。
+   */
+  const [removedConditions, setRemovedConditions] = useState<SearchConditionView[]>([]);
   const [candidates, setCandidates] = useState<CandidateListItem[]>([]);
   const [candidatePage, setCandidatePage] = useState(1);
   const [candidateTotal, setCandidateTotal] = useState(0);
@@ -1405,7 +1523,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [matchPage, setMatchPage] = useState(1);
   /** 批量抽屉里按候选人筛选；空串＝全部。 */
   const [drawerCandidateFilter, setDrawerCandidateFilter] = useState("");
-  const [jdMatch, setJdMatch] = useState<{ title: string; company: string; location: string; run_id: string | null; items: CandidateSearchItem[] } | null>(null);
+  const [jdMatch, setJdMatch] = useState<{ title: string; company: string; location: string; run_id: string | null; items: CandidateSearchItem[]; hardFilters: { kind: string; alternatives: string[]; source_text: string }[]; relaxed: string[] } | null>(null);
   const [jdReview, setJdReview] = useState<AiReviewState | null>(null);
   const [jdReviewReasoning, setJdReviewReasoning] = useState(false);
   const [jdMatchingId, setJdMatchingId] = useState<string | null>(null);
@@ -1492,6 +1610,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [bdFollowUp, setBdFollowUp] = useState("");
   const [bdSessionId, setBdSessionId] = useState<string | null>(null);
   const [bdLeads, setBdLeads] = useState<BdAgentLead[]>([]);
+  const [bdDegradedReason, setBdDegradedReason] = useState<string | null>(null);
   const [bdLoading, setBdLoading] = useState(false);
   const [bdProgress, setBdProgress] = useState<BdProgress | null>(null);
   const [bdPoolByLead, setBdPoolByLead] = useState<Record<string, BdPoolCandidate[]>>({});
@@ -1508,6 +1627,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [dashboardBusy, setDashboardBusy] = useState(false);
   const dashboardRequest = useRef(0);
   const [dailyFollowup, setDailyFollowup] = useState<DailyFollowupToday | null>(null);
+  // 建提醒：目标候选人 + 保存中状态（提醒内容由弹窗自己维护）。
+  const [reminderTarget, setReminderTarget] = useState<{ candidateId: string; name: string } | null>(null);
+  const [reminderBusy, setReminderBusy] = useState(false);
 
   // 招聘流程面板
   const [caseDrawer, setCaseDrawer] = useState<CaseDetail | null>(null);
@@ -1560,7 +1682,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
 
   /** 由筛选草稿构造请求条件：搜索与「搜索侧 AI 复核」必须用同一套条件。 */
-  function buildSearchFilters(): CandidateSearchFilters {
+  function buildSearchFilters(extraRemoved: SearchConditionView[] = []): CandidateSearchFilters {
     const filters: CandidateSearchFilters = {};
     if (searchFilterDraft.minYears !== "") filters.min_years = Number(searchFilterDraft.minYears);
     if (searchFilterDraft.maxYears !== "") filters.max_years = Number(searchFilterDraft.maxYears);
@@ -1575,6 +1697,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (searchFilterDraft.phone.trim()) filters.phone = searchFilterDraft.phone.trim();
     if (searchFilterDraft.gender) filters.gender = searchFilterDraft.gender;
     if (searchFilterDraft.name.trim()) filters.name = searchFilterDraft.name.trim();
+    if (searchFilterDraft.communicationNote.trim()) filters.communication_note = searchFilterDraft.communicationNote.trim();
     if (searchFilterDraft.company.trim()) filters.company = searchFilterDraft.company.trim();
     if (searchFilterDraft.title.trim()) filters.title = searchFilterDraft.title.trim();
     if (searchFilterDraft.school.trim()) filters.school = searchFilterDraft.school.trim();
@@ -1582,10 +1705,81 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (searchFilterDraft.careerDirections.length) filters.career_directions = searchFilterDraft.careerDirections;
     if (searchFilterDraft.careerSpecializations.length) filters.career_specializations = searchFilterDraft.careerSpecializations;
     if (searchFilterDraft.businessDirections.length) filters.business_directions = searchFilterDraft.businessDirections;
+    // 用户删掉的生效条件：面板没有值时补一个显式空值，让后端 `_merge_filters` 的
+    // 「显式值优先」把文本/AI 解析出的同类条件一起压掉（后端用 exclude_unset 判断显式覆盖，
+    // 所以键必须真的写进 filters）。
+    for (const removed of [...removedConditions, ...extraRemoved]) {
+      if (removed.field in filters) continue;
+      (filters as Record<string, unknown>)[removed.field] = CONDITION_LIST_FIELDS.has(removed.field) ? [] : null;
+    }
     return filters;
   }
 
-  async function submitSearch() {
+  /** 删除一条生效条件：先清面板草稿里的对应值，面板清空后再下发显式空值压住解析结果。 */
+  function removeSearchCondition(field: string, value: string) {
+    const key = CONDITION_DRAFT_KEYS[field];
+    const nextDraft = { ...searchFilterDraft };
+    let keepsPanelValue = false;
+    if (key) {
+      const current = nextDraft[key];
+      const entries = Array.isArray(current) ? current : splitList(current);
+      const remaining = entries.filter((entry) => entry !== value);
+      if (remaining.length !== entries.length) {
+        nextDraft[key] = (Array.isArray(current) ? remaining : remaining.join("、")) as never;
+      }
+      keepsPanelValue = remaining.length > 0;
+    }
+    if (key && !keepsPanelValue) {
+      setRemovedConditions((current) => (
+        current.some((entry) => entry.field === field) ? current : [...current, { field, value, confidence: "inferred" }]
+      ));
+    }
+    setSearchFilterDraft(nextDraft);
+  }
+
+  /** 恢复一条被删掉的生效条件：撤销显式空值，下次搜索按解析结果重新生效。 */
+  function restoreSearchCondition(field: string) {
+    setRemovedConditions((current) => current.filter((entry) => entry.field !== field));
+  }
+
+  /** 修改一条生效条件：把值回填到精确筛选面板草稿（面板优先语义不变），并撤销该字段的移除。 */
+  function editSearchCondition(field: string, value: string) {
+    const key = CONDITION_DRAFT_KEYS[field];
+    if (!key) return;
+    const current = searchFilterDraft[key];
+    if (Array.isArray(current)) {
+      if (!current.includes(value)) setSearchFilterDraft({ ...searchFilterDraft, [key]: [...current, value] as never });
+    } else if (!splitList(current).includes(value)) {
+      setSearchFilterDraft({ ...searchFilterDraft, [key]: [...splitList(current), value].join("、") as never });
+    }
+    setRemovedConditions((list) => list.filter((entry) => entry.field !== field));
+  }
+
+  function submitSearch() {
+    return runSearch([]);
+  }
+
+  /**
+   * 空结果自诊断：把推断出来的条件（规则/AI 解析，非面板手填）全部去掉后重搜。
+   * 这些条件最可能是解析误判，去掉它们等于把「人明明在库里、条件把人筛没了」这一种空结果排掉。
+   */
+  function dropInferredConditionsAndSearch() {
+    const dropped = new Map<string, SearchConditionView>();
+    for (const condition of searchConditions) {
+      if (condition.confidence === "inferred" && condition.source !== "panel" && !dropped.has(condition.field)) {
+        dropped.set(condition.field, condition);
+      }
+    }
+    const extraRemoved = [...dropped.values()];
+    if (!extraRemoved.length) return;
+    setRemovedConditions((current) => {
+      const known = new Set(current.map((entry) => entry.field));
+      return [...current, ...extraRemoved.filter((entry) => !known.has(entry.field))];
+    });
+    void runSearch(extraRemoved);
+  }
+
+  async function runSearch(extraRemoved: SearchConditionView[]) {
     if (!query.trim() && !Object.values(searchFilterDraft).some((value) => value !== "")) {
       setNotice("请输入搜索词或选择筛选条件。");
       return;
@@ -1594,12 +1788,13 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     setNotice(null);
     try {
-      const filters = buildSearchFilters();
+      const filters = buildSearchFilters(extraRemoved);
       const response = await api.searchCandidates(query.trim(), filters, {
         mode: searchMode,
         operator: keywordOperator,
         rewriteEnabled,
         searchBody,
+        parseEnabled,
       });
       setHasSearched(true);
       setResults(response.items);
@@ -1607,7 +1802,17 @@ export function App({ api }: { api: RecruitmentApi }) {
       setSelectedCandidateIds(new Set());
       // 结果集与旧复核结论不再对应，清掉避免把上一次的亮点/风险点挂到新人身上。
       setSearchReview(null);
-      setSearchConditions(response.query_plan?.parsed_conditions ?? []);
+      const plan = response.query_plan;
+      // 展示**合并后**的最终生效条件（含面板手填项）；旧 sidecar 没有该字段时退回解析侧结果。
+      setSearchConditions(plan?.effective_conditions ?? plan?.parsed_conditions ?? []);
+      setRelaxedSearchFields(plan?.relaxed_conditions ?? []);
+      // 解析回显只在开启 AI 解析时展示，避免把规则解析的默认结果当成 AI 产物。
+      setSearchPlanEcho(parseEnabled && plan ? {
+        source: plan.parsed_plan_source ?? "rule",
+        keywordTerms: plan.keyword_terms ?? plan.retained_keywords ?? "",
+        semanticQuery: plan.semantic_query ?? null,
+        unparsedTerms: plan.unparsed_terms ?? [],
+      } : null);
       if (response.empty_reason === "index_not_ready") {
         setNotice("索引尚未就绪，请先导入并解析简历。");
       } else if (response.empty_reason === "service_error") {
@@ -1741,12 +1946,18 @@ export function App({ api }: { api: RecruitmentApi }) {
   function closeSearchResults() {
     setResults([]);
     setHasSearched(false);
+    setSearchConditions([]);
+    setSearchPlanEcho(null);
+    setRemovedConditions([]);
   }
 
   function resetSearchAndGoHome() {
     setQuery("");
     setResults([]);
     setHasSearched(false);
+    setSearchConditions([]);
+    setSearchPlanEcho(null);
+    setRemovedConditions([]);
     setSearchFilterDraft({ ...EMPTY_SEARCH_FILTER_DRAFT });
     void loadCandidates(1);
   }
@@ -1764,6 +1975,20 @@ export function App({ api }: { api: RecruitmentApi }) {
       setResults((list) => list.map((r) => (r.candidate_id === candidateId ? patchSearchItem(r, field, value) : r)));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "修改失败");
+      throw caught;
+    }
+  }
+
+  /** 保存沟通记录：只更新候选人级备注，不触碰 parsed_data/画像/索引。 */
+  async function saveCommunicationNote(candidateId: string, note: string) {
+    setError(null);
+    try {
+      const saved = await api.updateCommunicationNote(candidateId, note);
+      const written = saved.communication_note ?? null;
+      setCandidates((list) => list.map((c) => (c.candidate_id === candidateId ? { ...c, communication_note: written } : c)));
+      setResults((list) => list.map((r) => (r.candidate_id === candidateId ? { ...r, communication_note: written } : r)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "沟通记录保存失败");
       throw caught;
     }
   }
@@ -2037,10 +2262,10 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function regenerateJdProfile(jdId: string, instruction = "") {
+  async function regenerateJdProfile(jdId: string, instruction = "", onStage?: (progress: ProfileGenerationProgress) => void) {
     setError(null);
     try {
-      const result = await api.regenerateJdProfile(jdId, instruction);
+      const result = await api.regenerateJdProfile(jdId, instruction, onStage);
       const profile = result.summary ?? null;
       if (result.points?.length) {
         // 硬条件与画像同一次调用产出；一起缓存，保存时不必再调一次模型。
@@ -2062,7 +2287,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  /** JD 列表内联保存画像：文本变了就按 AI 重解析硬条件并覆盖，一次提交后重建索引。 */
+  /** JD 列表内联保存画像：文本变了就按模型重解析硬条件与年限并覆盖，一次提交后重建索引。 */
   async function saveJdProfileInline(jdId: string, profileText: string) {
     setError(null);
     const jd = jdPageItems.find((item) => item.jd_id === jdId) ?? jds.find((item) => item.jd_id === jdId);
@@ -2070,15 +2295,23 @@ export function App({ api }: { api: RecruitmentApi }) {
     const current = (jd?.parsed_data?.candidate_profile ?? "").trim() || null;
     try {
       let constraints: JdExactConstraint[] | undefined;
+      let years: { min_years: number | null; years_stated: boolean } | undefined;
       if (saved !== current) {
         // 「AI 重新生成」已产出过硬条件时直接复用；否则按新文本重解析（画像一变就重解析覆盖）。
+        // 年限只能来自重解析：重新生成链路没有年限输出，此时交给后端的规则兜底。
         const cached = jdDualFormRef.current.get(jdId);
-        constraints = cached && cached.narrative === saved && cached.constraints
-          ? cached.constraints
-          : (await api.parseJdConstraints(saved ?? "")).constraints;
+        if (cached && cached.narrative === saved && cached.constraints) {
+          constraints = cached.constraints;
+        } else {
+          const parsedRequirements = await api.parseJdConstraints(saved ?? "");
+          constraints = parsedRequirements.constraints;
+          years = { min_years: parsedRequirements.min_years, years_stated: parsedRequirements.years_stated };
+        }
       }
       const parsed: JdParsedData = { candidate_profile: saved };
       if (constraints) parsed.exact_constraints = constraints;
+      // 画像没提年限时不提交 min_years，让后端保留 JD 解析出的原值。
+      if (years?.years_stated) parsed.min_years = years.min_years;
       await api.updateJdParsed(jdId, parsed);
       jdDualFormRef.current.delete(jdId);
       await loadJdsPage(jdPage, jdFilter);
@@ -2090,7 +2323,9 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function saveJdProfileAndConstraints(jdId: string, profile: string, constraints: JdExactConstraint[]) {
+  async function saveJdProfileAndConstraints(
+    jdId: string, profile: string, constraints: JdExactConstraint[], years: JdProfileYears,
+  ) {
     setError(null);
     try {
       // 文字画像与结构化硬条件一次原子提交，避免两次请求部分成功造成不一致。
@@ -2109,6 +2344,8 @@ export function App({ api }: { api: RecruitmentApi }) {
       await api.updateJdParsed(jdId, {
         candidate_profile: saved,
         exact_constraints: constraints,
+        // 画像没提年限时不提交 min_years，让后端保留 JD 解析出的原值。
+        ...(years.yearsStated ? { min_years: years.minYears } : {}),
         ...(generated ? { candidate_profile_points: generated.points, candidate_profile_compact: generated.compact } : {}),
       });
       await loadJdsPage(jdPage, jdFilter);
@@ -2139,8 +2376,15 @@ export function App({ api }: { api: RecruitmentApi }) {
         location: jd.location || jd.parsed_data?.location || "",
         run_id: result.run_id,
         items: result.items,
+        hardFilters: result.hard_filters ?? [],
+        relaxed: result.relaxed ?? [],
       });
       setJdReview(null);
+      // 安全阀触发：下推的硬条件把候选池清空了，系统已自动回退，必须让用户知道
+      // 「这一次的硬门槛没有生效」，否则会把放宽后的结果误当成满足硬条件的推荐。
+      if ((result.relaxed ?? []).length > 0) {
+        setNotice(`岗位硬条件（${(result.relaxed ?? []).join("、")}）未匹配到候选人，已自动放宽后重新检索，本页结果不满足这些硬条件。`);
+      }
       if (result.items.length === 0) {
         if (result.empty_reason === "jd_direction_pending") {
           setError("该岗位的职业方向尚未确认，请先在岗位详情中确认方向后再匹配候选人。");
@@ -2435,6 +2679,10 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   async function deleteJd(jd: JdListItem) {
     setError(null);
+    // 岗位删除不可撤销，必须确认；文案要说明流程会被保留（岗位信息转快照）。
+    if (!window.confirm(`确定永久删除岗位「${jd.title || jd.jd_id}」吗？关联的招聘流程会保留（岗位信息转为快照），此操作不可撤销。`)) {
+      return;
+    }
     try {
       await api.deleteJd(jd.jd_id);
       // 删除后刷新分页列表（管理页显示的是 jdPageItems）；若当前页被删空则回退到上一页。
@@ -2629,7 +2877,9 @@ export function App({ api }: { api: RecruitmentApi }) {
     try {
       const result = await api.importJdBatch(jdSource.trim());
       setJdResult(result.imported);
-      await loadJds();
+      // 导入后必须**同时**刷新分页列表：只刷 loadJds() 会更新头部「共 N 个在招岗位」，
+      // 而「岗位列表 N 个」仍停在导入前的旧值（表现为头部 1、列表 0，e2e 实测）。
+      await Promise.all([loadJds(), loadJdsPage(1, jdFilter)]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "JD 导入失败");
     }
@@ -2641,7 +2891,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     try {
       const result = await api.importJdBatchFile(file);
       setJdResult(result.imported);
-      await loadJds();
+      await Promise.all([loadJds(), loadJdsPage(1, jdFilter)]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "JD 文件导入失败");
     }
@@ -3207,10 +3457,20 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     setBdLoading(true);
     setBdProgress(null);
+    setBdLeads([]);
+    setBdDegradedReason(null);
     try {
-      const result = await api.runBdAgentStream(bdQuery.trim(), "text", 10, (p) => setBdProgress(p));
+      // 每轮综合完就收到一批线索，先渲染出来，不必等整批检索结束。
+      const result = await api.runBdAgentStream(
+        bdQuery.trim(),
+        "text",
+        10,
+        (p) => setBdProgress(p),
+        (leads) => setBdLeads((prev) => sortLeadsByConfidence([...prev, ...leads])),
+      );
       setBdSessionId(result.session_id);
       setBdLeads(sortLeadsByConfidence(result.leads));
+      setBdDegradedReason(result.degraded_reason ?? null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "线索搜索失败");
     } finally {
@@ -3227,6 +3487,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     try {
       const result = await api.followUpBdAgent(bdSessionId, bdFollowUp.trim(), 10);
       setBdLeads((prev) => sortLeadsByConfidence([...prev, ...result.leads]));
+      setBdDegradedReason(result.degraded_reason ?? null);
       setBdFollowUp("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "追问失败");
@@ -3285,6 +3546,63 @@ export function App({ api }: { api: RecruitmentApi }) {
     await loadDashboard(dashboardFilters, granularity);
   }
 
+  /** 以服务端为准回读今日待办，避免本地乐观更新与服务端不一致（例如失败或跨日）。 */
+  function refreshDailyFollowup() {
+    api.dailyFollowupToday().then(setDailyFollowup).catch(() => undefined);
+  }
+
+  /** 勾选今日待办的一项：只记录「今天处理过」，不代表任务完成；次日自动重置。 */
+  async function toggleDailyTodo(item: DailyFollowupItem) {
+    const done = !item.done;
+    setDailyFollowup((prev) => (prev === null ? prev : {
+      followup: prev.followup.map((row) => (row.item_key === item.item_key ? { ...row, done } : row)),
+      interview: prev.interview.map((row) => (row.item_key === item.item_key ? { ...row, done } : row)),
+      reminders: prev.reminders,
+    }));
+    try {
+      await api.checkDailyTodo({ item_key: item.item_key, done });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "待办勾选保存失败");
+    } finally {
+      refreshDailyFollowup();
+    }
+  }
+
+  function openCandidateReminder(candidateId: string, name: string) {
+    setReminderTarget({ candidateId, name });
+  }
+
+  /** 建提醒：建好后出现在「今日待办」的「我的提醒」列。 */
+  async function saveCandidateReminder(content: string): Promise<string | null> {
+    if (reminderTarget === null) return "未选择候选人";
+    setReminderBusy(true);
+    try {
+      await api.createCandidateReminder({ candidate_id: reminderTarget.candidateId, content });
+      setReminderTarget(null);
+      refreshDailyFollowup();
+      return null;
+    } catch (caught) {
+      return caught instanceof Error ? caught.message : "保存失败";
+    } finally {
+      setReminderBusy(false);
+    }
+  }
+
+  /** 我的提醒的勾选是「任务完成」：勾上即移出列表。 */
+  async function completeCandidateReminder(reminder: CandidateReminderItem) {
+    setDailyFollowup((prev) => (prev === null ? prev : {
+      ...prev,
+      reminders: prev.reminders.filter((row) => row.id !== reminder.id),
+    }));
+    try {
+      await api.completeCandidateReminder(reminder.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "提醒完成失败");
+    } finally {
+      refreshDailyFollowup();
+    }
+  }
+
   async function loadSettings() {
     setError(null);
     try {
@@ -3325,7 +3643,7 @@ export function App({ api }: { api: RecruitmentApi }) {
         models: c.models,
         enabled: c.enabled,
       }));
-      const updates = mergeAiConnection(mapped, connection).slice(0, 2);
+      const updates = mergeAiConnection(mapped, connection);
       const updated = await api.updateAiConfig({ connections: updates });
       setAiConfig(updated);
       setAiMessage("AI 配置已保存并生效");
@@ -3843,6 +4161,8 @@ export function App({ api }: { api: RecruitmentApi }) {
             onRewriteEnabledChange={setRewriteEnabled}
             searchBody={searchBody}
             onSearchBodyChange={setSearchBody}
+            parseEnabled={parseEnabled}
+            onParseEnabledChange={setParseEnabled}
             searching={searching}
             searchFilterDraft={searchFilterDraft}
             onSearchFilterChange={setSearchFilterDraft}
@@ -3852,6 +4172,13 @@ export function App({ api }: { api: RecruitmentApi }) {
             hasSearched={hasSearched}
             results={results}
             searchConditions={searchConditions}
+            relaxedSearchFields={relaxedSearchFields}
+            searchPlanEcho={searchPlanEcho}
+            removedConditions={removedConditions}
+            onRemoveSearchCondition={removeSearchCondition}
+            onEditSearchCondition={editSearchCondition}
+            onRestoreSearchCondition={restoreSearchCondition}
+            onDropInferredConditions={dropInferredConditionsAndSearch}
             candidates={candidates}
             candidatePage={candidatePage}
             candidateTotal={candidateTotal}
@@ -3872,12 +4199,14 @@ export function App({ api }: { api: RecruitmentApi }) {
             onColumnsMenuOpenChange={setColumnsMenuOpen}
             onScrollTop={scrollToCandidateListTop}
             onUpdateField={updateCandidateFieldValue}
+            onSaveCommunicationNote={saveCommunicationNote}
             onEditEducation={(candidateId, educations) => setEducationEditor({ candidateId, educations })}
             onEditProfile={(candidateId, summary, source, stale) => setProfileEditor({ candidateId, summary, source, stale })}
             onMatch={runCandidateMatch}
             onPreview={previewResumeFile}
             onDownload={downloadResumeFile}
             onCreateCase={openCreateCasePicker}
+            onCreateReminder={openCandidateReminder}
             onReparse={reparseResumeSoft}
             onForceReparse={forceReparse}
             onOpenReview={openResumeReview}
@@ -4002,6 +4331,8 @@ export function App({ api }: { api: RecruitmentApi }) {
             dashboardDraft={dashboardDraft}
             dashboardBusy={dashboardBusy}
             dailyFollowup={dailyFollowup}
+            onToggleTodo={toggleDailyTodo}
+            onCompleteReminder={completeCandidateReminder}
             jds={jds}
             onDashboardDraftChange={setDashboardDraft}
             onApplyFilters={loadDashboard}
@@ -4106,6 +4437,7 @@ export function App({ api }: { api: RecruitmentApi }) {
             onBdFollowUpChange={setBdFollowUp}
             bdSessionId={bdSessionId}
             bdLeads={bdLeads}
+            bdDegradedReason={bdDegradedReason}
             bdLoading={bdLoading}
             bdProgress={bdProgress}
             bdPoolByLead={bdPoolByLead}
@@ -4199,6 +4531,15 @@ export function App({ api }: { api: RecruitmentApi }) {
           />
         )}
       </main>
+
+      {reminderTarget && (
+        <CandidateReminderDialog
+          candidateName={reminderTarget.name}
+          busy={reminderBusy}
+          onClose={() => setReminderTarget(null)}
+          onSave={saveCandidateReminder}
+        />
+      )}
 
       {matchDrawer && (
         <div className="match-drawer-backdrop" onClick={() => setMatchDrawer(null)}>
@@ -4335,7 +4676,7 @@ export function App({ api }: { api: RecruitmentApi }) {
               ) : (
                 <>
                   <table className="drawer-table">
-                  <thead><tr>{drawerSources.length > 0 && <th>候选人</th>}<th>岗位名称</th><th>公司</th><th>候选人画像</th><th>符合点</th><th>注意点</th><th>查看详情</th><th>操作</th></tr></thead>
+                  <thead><tr>{drawerSources.length > 0 && <th>候选人</th>}<th>岗位名称</th><th>公司</th><th>候选人画像</th><th>符合点</th><th>风险点</th><th>查看详情</th><th>操作</th></tr></thead>
                   <tbody>
                     {(() => {
                       const reviewDone = Object.keys(drawerVerdicts).length > 0;
@@ -4343,8 +4684,9 @@ export function App({ api }: { api: RecruitmentApi }) {
                       return sorted.slice((matchPage - 1) * 10, matchPage * 10).map((item) => {
                         const profile = item.parsed_data?.candidate_profile || "";
                         const verdict = drawerVerdicts[item.result_id];
-                        const reasonsText = (verdict?.reasons ?? []).join("\n");
-                        const cautionsText = (verdict?.cautions ?? []).join("\n");
+                        // 符合点：三段（项目 → 工作经历 → 技术栈）按顺序拼接；风险点单列。
+                        const reasonsText = reviewMatchLines(verdict).join("\n");
+                        const cautionsText = (verdict?.risks ?? []).join("\n");
                         // 批量匹配时每行带自己的 run（按行复核）；单人匹配时共用抽屉级 run。
                         const rowRunId = item.run_id ?? drawerSingleRunId;
                         return (
@@ -4356,11 +4698,17 @@ export function App({ api }: { api: RecruitmentApi }) {
                             )}
                             <td>
                               <strong>{item.title}</strong>
+                              {item.business_match && (
+                                <span className="muted" title="业务方向与本人一致，优先展示" style={{ marginLeft: 8, fontSize: 12 }}>业务一致</span>
+                              )}
                               {verdict && (
                                 <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{reviewVerdictLabel(verdict.verdict)}</span>
                               )}
                               {verdict?.failed && (
                                 <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>复核失败</span>
+                              )}
+                              {verdict?.skipped && (
+                                <span className="muted" title={(verdict.risks || []).join("\n")} style={{ marginLeft: 6, fontSize: 12 }}>未复核</span>
                               )}
                             </td>
                             <td>{item.company}</td>
@@ -4421,7 +4769,7 @@ export function App({ api }: { api: RecruitmentApi }) {
           summary={profileEditor.summary}
           source={profileEditor.source}
           onSave={(summary) => saveProfile(summary)}
-          onRegenerate={(instruction) => regenerateProfile(instruction)}
+          onRegenerate={(instruction, onStage) => regenerateProfile(instruction, onStage)}
           onClose={() => setProfileEditor(null)}
         />
       )}
@@ -4432,9 +4780,11 @@ export function App({ api }: { api: RecruitmentApi }) {
           title={jdProfileEditor.title}
           profile={jdProfileEditor.profile}
           constraints={jdProfileEditor.constraints}
-          onSave={(jdId, profile, constraints) => saveJdProfileAndConstraints(jdId, profile, constraints)}
-          onRegenerate={(jdId, instruction) => regenerateJdProfile(jdId, instruction)}
-          onParseConstraints={(text) => api.parseJdConstraints(text).then((r) => r.constraints)}
+          onSave={(jdId, profile, constraints, years) => saveJdProfileAndConstraints(jdId, profile, constraints, years)}
+          onRegenerate={(jdId, instruction, onStage) => regenerateJdProfile(jdId, instruction, onStage)}
+          onParseConstraints={(text) => api.parseJdConstraints(text).then((r) => ({
+            constraints: r.constraints, minYears: r.min_years, yearsStated: r.years_stated,
+          }))}
           onClose={() => setJdProfileEditor(null)}
         />
       )}

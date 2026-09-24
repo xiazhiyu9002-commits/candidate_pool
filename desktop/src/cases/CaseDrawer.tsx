@@ -87,7 +87,7 @@ export function CaseDrawer({ api, initialCase, onClose, onUpdated }: {
   return <div className="match-drawer-backdrop" onClick={close}>
     <aside className="match-drawer workflow-drawer" role="dialog" aria-modal="true" aria-label="流程中" onClick={(event) => event.stopPropagation()}>
       <div className="match-drawer-header">
-        <div><h2>流程中</h2><small>{detail.candidate_name || detail.candidate_id} · {detail.company} {detail.jd_title || detail.jd_id} · {detail.stage}</small></div>
+        <div><h2>流程中</h2><small>{detail.candidate_name || detail.candidate_id} · {detail.company} {detail.jd_title || detail.jd_id}{detail.jd_deleted ? "（岗位已删除）" : ""} · {detail.stage}</small></div>
         <button className="detail-button" disabled={busy || !!attempt} onClick={close}>关闭</button>
       </div>
       <div className="match-drawer-body">

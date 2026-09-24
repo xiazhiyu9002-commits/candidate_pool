@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pymupdf
@@ -27,6 +26,10 @@ from kerui_recruit.resumes.extract import (
 )
 from kerui_recruit.resumes.identity import resolve_identity
 from kerui_recruit.resumes.normalize import normalize_resume
+from kerui_recruit.resumes.revision_purge import (
+    inherit_manual_overrides,
+    purge_superseded_revisions,
+)
 from kerui_recruit.resumes.quality import (
     DOMINANT_FRAGMENT_RATIO,
     analyze_text,
@@ -37,6 +40,27 @@ from kerui_recruit.search.contracts import SearchChunk, SearchIndex
 from kerui_recruit.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
+
+
+def _ai_parse_route(parser: object) -> str:
+    """本次解析实际走的是远程 AI 还是本地确定性解析。
+
+    为什么必须记下来：`_RoutedResumeParser` 在**没有可用快速路由**（`E_AI_NO_PROVIDER`）时
+    会回退 `LocalResumeParser`。这条兜底本身是设计（AI 智能解析默认关闭的用户要走它），
+    但**静默**就变成误导——2026-09-22 真机验收里，智谱/火山两轮因为连接没有 FAST_TEXT 角色
+    全部走了本地解析，任务 0.2~3.6 秒就「成功」，界面显示解析完成而画像为空，
+    看起来像「供应商能解析但解析质量差」，实际一次模型调用都没发生。
+
+    不认识的实现按「远程」处理：失败开放，不凭空制造降级结论。
+    """
+    probe = getattr(parser, "uses_remote_ai", None)
+    if probe is None:
+        return "remote"
+    try:
+        return "remote" if probe() else "local"
+    except Exception:
+        logger.warning("判断解析路线失败，按远程解析记录", exc_info=True)
+        return "remote"
 
 
 _DEGREE_SHORT = {
@@ -95,6 +119,7 @@ class ResumePipeline:
         search_index: SearchIndex | None = None,
         defer_indexing: bool = False,
         encryption_service: EncryptionService | None = None,
+        task_repository=None,
     ) -> None:
         self.session_factory = session_factory
         self.blob_store = blob_store
@@ -105,6 +130,8 @@ class ResumePipeline:
         self.search_index = search_index
         self.defer_indexing = defer_indexing
         self.encryption_service = encryption_service
+        # 版本级硬删除需要登记可重试的物理文件清理任务；缺省时退化为立即删除。
+        self.task_repository = task_repository
 
     async def run(self, revision_id: str, *, force_ocr: bool = False, use_vision: bool = False) -> PipelineResult:
         with self.session_factory() as session:
@@ -129,6 +156,7 @@ class ResumePipeline:
                 extracted = await asyncio.to_thread(extract_text, source_path)
                 diagnostics = {
                     "page_count": extracted.page_count, "forced_ocr": force_ocr,
+                    "ai_parse_route": _ai_parse_route(self.parser),
                     "pages": [dict(
                         {key: value for key, value in asdict(page).items() if key != "text"},
                         route="ocr" if force_ocr or page.needs_ocr else "direct",
@@ -171,7 +199,16 @@ class ResumePipeline:
             validity = check_parsed_resume(parsed, source_text)
             if not validity.ok:
                 raise PipelineFailure(validity.error_code or "E_STRUCTURED_EMPTY", validity.reason)
-            candidate_id = self._resolve_identity(revision_id, candidate_id, contact, parsed.name)
+            candidate_id, merged_overrides = self._resolve_identity(
+                revision_id, candidate_id, contact, parsed.name
+            )
+            if merged_overrides is not None:
+                # 人工修订必须在身份识别**之后**重放：它可能来自被取代的旧版本（决策 D7：
+                # 重生成解析字段、保留人工修订），而识别之前还看不到那个版本。
+                overrides = merged_overrides
+                parsed = ParsedResume.model_validate({
+                    **parsed.model_dump(mode="json"), **overrides,
+                })
             normalized = normalize_resume(parsed)
             # 初次解析产生非空画像但缺元数据时，补全 source/hash/stale；
             # 人工画像 source=manual 且 input_hash 置空，AI 画像保存输入哈希。
@@ -382,13 +419,27 @@ class ResumePipeline:
         current_candidate_id: str,
         contact,
         name: str | None,
-    ) -> str:
+    ) -> tuple[str, dict | None]:
         """解析后按联系方式指纹识别已有候选人，命中则把新版本改挂到已有候选。
 
+        返回 ``(候选人 id, 该版本最终生效的人工修订)``。第二个元素为 ``None`` 表示
+        「无需变更」，调用方必须保留原样——**不能**把它当成空 dict，否则会把本版本
+        自己的人工覆盖清空，导致 ``_persist_ready`` 的冲突校验误报。
+
+        人工修订来自被取代的旧版本（决策 D7：重生成解析字段、保留人工修订），调用方
+        需要用它在解析结果上重放，否则「重生成一切信息」会把人工校正一并丢掉。
+
         身份识别为尽力而为：任何异常都不阻断简历解析，退回原候选人。
+
+        旧版本的物理清理由:meth:`_persist_ready` 在**同一事务**内完成，避免出现
+        「旧版本已删、新版本仍不可用」的空洞状态。
         """
         try:
             with self.session_factory() as session:
+                revision = session.get(ResumeRevision, revision_id)
+                if revision is None:
+                    return current_candidate_id, None
+
                 resolution = resolve_identity(
                     session,
                     phone=contact.phone,
@@ -396,14 +447,22 @@ class ResumePipeline:
                     name=name,
                 )
                 if resolution.action != "MATCHED" or resolution.candidate_id is None:
-                    return current_candidate_id
+                    return current_candidate_id, None
                 target_id = resolution.candidate_id
-                if target_id == current_candidate_id:
-                    return current_candidate_id
 
-                revision = session.get(ResumeRevision, revision_id)
-                if revision is None:
-                    return current_candidate_id
+                # 保留人工修订：迁移到新版本；本版本自己的覆盖（同一版本重新解析时产生）
+                # 更新，因此优先级更高。
+                inherited = inherit_manual_overrides(
+                    session, candidate_id=target_id, keep_revision_id=revision_id
+                )
+                own = dict(revision.manual_overrides or {})
+                merged = {**inherited, **own}
+                if merged != own:
+                    revision.manual_overrides = merged
+
+                if target_id == current_candidate_id:
+                    session.commit()
+                    return target_id, merged
 
                 target_document = session.scalar(
                     select(ResumeDocument)
@@ -430,9 +489,11 @@ class ResumePipeline:
                     if old_document is not None:
                         session.delete(old_document)
 
+                # 占位候选人是本次导入临时创建的：身份已并入目标候选人，直接物理删除
+                # （决策 D8：不用软删除），免得库里留下永远无人使用的空候选人。
                 duplicate = session.get(Candidate, current_candidate_id)
                 if duplicate is not None:
-                    duplicate.deleted_at = datetime.now(timezone.utc)
+                    session.delete(duplicate)
 
                 for claim in session.scalars(
                     select(ResumeImportClaim).where(
@@ -442,13 +503,13 @@ class ResumePipeline:
                     claim.candidate_id = target_id
 
                 session.commit()
-                return target_id
+                return target_id, merged
         except Exception:
             logger.exception(
                 "identity resolution failed; keeping candidate %s",
                 current_candidate_id,
             )
-            return current_candidate_id
+            return current_candidate_id, None
 
     def _persist_ready(
         self,
@@ -513,6 +574,18 @@ class ResumePipeline:
             if revision.is_current:
                 from kerui_recruit.search.sync import enqueue_sync
                 enqueue_sync(session, "candidate", candidate.id)
+                # 只保留当前简历（决策 D8）：被取代的旧版本在这里物理删除。与本事务里
+                # 「新版本置为 READY、候选人列改写」一起提交，避免中途失败留下
+                # 「旧版本已删、新版本仍不可用」的空洞状态。
+                # 索引无需单独处理：上面的 enqueue_sync 会整体重建该候选人，而
+                # replace_candidate 会先删光其全部 chunk 再按当前版本写入。
+                purge_superseded_revisions(
+                    session,
+                    candidate_id=candidate.id,
+                    keep_revision_id=revision.id,
+                    blob_store=self.blob_store,
+                    task_repository=self.task_repository,
+                )
 
     def _persist_evidence(self, revision_id: str, diagnostics: dict, text: str, previous_ready: bool) -> None:
         with self.session_factory() as session, session.begin():

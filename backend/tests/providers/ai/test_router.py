@@ -82,7 +82,7 @@ class CancelAwareAdapter:
         await asyncio.sleep(10)
 
 
-def target(provider_id: str, adapter, *, role: ModelRole = ModelRole.FAST_TEXT, connection_id: str | None = None, allowed_contexts=None, profile_kwargs=None) -> RouterTarget:
+def target(provider_id: str, adapter, *, role: ModelRole = ModelRole.FAST_TEXT, connection_id: str | None = None, allowed_contexts=None, profile_kwargs=None, reasoning_effort=None) -> RouterTarget:
     kwargs = dict(profile_kwargs or {})
     kwargs.setdefault("roles", frozenset({role}))
     return RouterTarget(
@@ -93,6 +93,7 @@ def target(provider_id: str, adapter, *, role: ModelRole = ModelRole.FAST_TEXT, 
         profile=profile(**kwargs),
         adapter=adapter,
         allowed_contexts=allowed_contexts if allowed_contexts is not None else frozenset(ExecutionContext),
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -160,6 +161,42 @@ async def test_kimi_code_is_filtered_from_background_and_batch():
     with pytest.raises(ProviderError):
         await route.generate(request(execution_context=ExecutionContext.BACKGROUND))
     assert kimi.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_only_the_top_two_ordered_targets_are_attempted():
+    first = MockAdapter(error=error("E_API_BUSY", FailureCategory.SERVER, True))
+    second = MockAdapter(error=error("E_API_BUSY", FailureCategory.SERVER, True))
+    third = MockAdapter(result="third")
+    route = AiProviderRouter([
+        target("deepseek", first),
+        target("qwen", second),
+        target("zhipu", third),
+    ])
+    with pytest.raises(ProviderError):
+        await route.generate(request())
+    # 列表顺序即主备顺序：第三个连接是候补，主备都失败也不越位调用。
+    assert first.calls == 1 and second.calls == 1
+    assert third.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_third_connection_is_promoted_once_the_first_two_are_cooling():
+    clock = FakeClock()
+    first = MockAdapter(error=error("E_API_BUSY", FailureCategory.SERVER, True))
+    second = MockAdapter(error=error("E_API_BUSY", FailureCategory.SERVER, True))
+    third = MockAdapter(result="third")
+    route = AiProviderRouter([
+        target("deepseek", first),
+        target("qwen", second),
+        target("zhipu", third),
+    ], clock=clock)
+    with pytest.raises(ProviderError):
+        await route.generate(request())
+    # 前两个进入冷却后，候补顺位前移成为唯一可用目标。
+    result = await route.generate(request())
+    assert result.provider_id == "zhipu"
+    assert third.calls == 1
 
 
 @pytest.mark.asyncio
@@ -363,3 +400,96 @@ async def test_connection_without_role_model_is_skipped():
     result = await route.generate(request(role=ModelRole.VISION))
     assert result.text == "vision-ok"
     assert fast_only.calls == 0
+
+
+class EffortRecorder:
+    def __init__(self) -> None:
+        self.requests: list[GenerationRequest] = []
+
+    async def generate(self, req, *, model, profile):
+        self.requests.append(req)
+        return GenerationResult(text="ok", parsed=None, connection_id="", provider_id="", model=model)
+
+    @property
+    def efforts(self) -> list[str | None]:
+        return [item.reasoning_effort for item in self.requests]
+
+    @property
+    def modes(self) -> list[ReasoningMode]:
+        return [item.reasoning for item in self.requests]
+
+
+def togglable_profile(**kwargs) -> dict:
+    """可切换思考（off+auto）的档案 —— 阿里的形态。"""
+    return {"supported_reasoning_modes": frozenset({ReasoningMode.OFF, ReasoningMode.AUTO}), **kwargs}
+
+
+def forced_profile(**kwargs) -> dict:
+    """强制思考（auto+required）的档案 —— 智谱 glm-5.3-flashx 的形态。"""
+    return {"supported_reasoning_modes": frozenset({ReasoningMode.AUTO, ReasoningMode.REQUIRED}), **kwargs}
+
+
+@pytest.mark.asyncio
+async def test_slot_effort_implies_thinking_on_for_a_togglable_model():
+    """按槽位配了强度 = 要求思考，所以要显式打开思考。
+
+    不打开就是 `enable_thinking=false` + `reasoning_effort`，阿里直接回 400
+    （`'reasoning_effort' must be 'none' when 'enable_thinking' is false`）。
+    """
+    recorder = EffortRecorder()
+    route = AiProviderRouter([target(
+        "qwen", recorder, reasoning_effort="low", profile_kwargs=togglable_profile(),
+    )])
+    await route.generate(request(reasoning=ReasoningMode.OFF))
+    assert recorder.efforts == ["low"]
+    assert recorder.modes == [ReasoningMode.AUTO]
+
+
+@pytest.mark.asyncio
+async def test_no_slot_effort_leaves_the_request_untouched():
+    """没配强度就原样放行：快速槽位「跟随模型默认」正是最快的那条路。"""
+    recorder = EffortRecorder()
+    route = AiProviderRouter([target(
+        "qwen", recorder, profile_kwargs=togglable_profile(),
+    )])
+    await route.generate(request(reasoning=ReasoningMode.OFF))
+    assert recorder.efforts == [None]
+    assert recorder.modes == [ReasoningMode.OFF]
+
+
+@pytest.mark.asyncio
+async def test_prefer_off_turns_thinking_off_even_when_the_slot_wants_effort():
+    """查询解析走「关思考优先」：能关就关，槽位配的强度一律不参与。
+
+    实测阿里 qwen3.8-flash：关思考 3.3 秒 / 开思考+low 14.2 秒，解析出的字段基本一致。
+    交给槽位配置等于每次搜索白等十几秒。
+    """
+    recorder = EffortRecorder()
+    route = AiProviderRouter([target(
+        "qwen", recorder, reasoning_effort="max", profile_kwargs=togglable_profile(),
+    )])
+    await route.generate(request(reasoning=ReasoningMode.OFF, reasoning_effort="low", prefer_off=True))
+    assert recorder.efforts == [None]
+    assert recorder.modes == [ReasoningMode.OFF]
+
+
+@pytest.mark.asyncio
+async def test_prefer_off_still_uses_the_request_effort_when_thinking_cannot_be_disabled():
+    """关不掉思考的模型（智谱 glm-5.3-flashx）只能压档位：不指定 11.2 秒 → `low` 2.0 秒。"""
+    recorder = EffortRecorder()
+    route = AiProviderRouter([target(
+        "zhipu", recorder, reasoning_effort="max", profile_kwargs=forced_profile(),
+    )])
+    await route.generate(request(reasoning=ReasoningMode.OFF, reasoning_effort="low", prefer_off=True))
+    assert recorder.efforts == ["low"]
+
+
+@pytest.mark.asyncio
+async def test_request_effort_is_not_overridden_by_the_slot():
+    """请求自带档位时槽位配置不改写它（查询解析之外的显式调用同理）。"""
+    recorder = EffortRecorder()
+    route = AiProviderRouter([target(
+        "qwen", recorder, reasoning_effort="max", profile_kwargs=togglable_profile(),
+    )])
+    await route.generate(request(reasoning_effort="low"))
+    assert recorder.efforts == ["low"]

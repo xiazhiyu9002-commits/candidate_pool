@@ -146,9 +146,12 @@ class ParsedJd(BaseModel):
 
 
 class ConstraintList(BaseModel):
-    """硬条件抽取的结构化输出（「按文本重解析硬条件」用）。"""
+    """画像文本要求抽取的结构化输出（「按文本重解析要求」用）。"""
 
     constraints: list[ExactConstraint] = Field(default_factory=list)
+    # 画像写明的最低工作年限：>0 → 要求 n 年以上；0 → 「经验不限」（不设年限窗口）；
+    # null → 画像没提年限（调用方保留原值）。上限与 ParsedJd.min_years 的校验域一致。
+    min_years: float | None = Field(default=None, ge=0, le=80)
 
 
 class JdParser(Protocol):

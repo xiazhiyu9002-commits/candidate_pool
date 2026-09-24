@@ -26,7 +26,7 @@ if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
 
 from kerui_recruit.search.degrees import DEGREE_ALIASES, normalize_degree
 
-LEXICON_VERSION = "2"
+LEXICON_VERSION = "3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +34,14 @@ class LexicalConcept:
     canonical: str
     aliases: tuple[str, ...]
 
+
+# 概念表分三组，同一份数据服务三处：文档侧词展开（expand_document_tokens）、
+# 查询侧概念解析（concepts_from_query）、以及「已策展概念」标记（is_curated_concept）。
+# 策展口径（2026-09-21 定）：
+# - 技能 + 常用缩写：策展。K8s→Kubernetes、数仓→数据仓库 这类写法差异必须互相命中。
+# - 岗位族：策展。猎头搜「前端」时它是硬条件，值得参与混合模式的弱命中门槛。
+# - 行业/领域泛词：**仅展开、不策展**。「金融/电商」在简历里无处不在，当门槛既不精准
+#   又会误杀转行的人（银行 ≠ 证券），所以只用于别名对齐，不进门槛与「同时满足」待满足集。
 
 # 技能概念：canonical -> (canonical, 别名...)。展示形式，匹配时 casefold。
 _SKILL_CONCEPTS: dict[str, tuple[str, ...]] = {
@@ -65,32 +73,80 @@ _SKILL_CONCEPTS: dict[str, tuple[str, ...]] = {
     "RAG": ("RAG", "检索增强生成"),
     "机器学习": ("机器学习", "Machine Learning", "ML"),
     "深度学习": ("深度学习", "Deep Learning", "DL"),
+    # 数据栈常用缩写：简历写「数仓」与查询写「数据仓库」必须互相命中。
+    "数据仓库": ("数据仓库", "数仓"),
+    "HTML5": ("HTML5", "H5"),
+    "Elasticsearch": ("Elasticsearch", "ES"),
+    "消息队列": ("消息队列", "MQ"),
+    "持续集成": ("持续集成", "CI/CD", "CICD"),
+    "自然语言处理": ("自然语言处理", "NLP"),
+    "计算机视觉": ("计算机视觉", "Computer Vision"),
+    "推荐系统": ("推荐系统", "推荐算法"),
+    "Spark": ("Spark",),
+    "Flink": ("Flink",),
+    "Hadoop": ("Hadoop",),
+    "Hive": ("Hive",),
+    "Linux": ("Linux",),
+    "Android": ("Android",),
+    "iOS": ("iOS",),
+    "小程序": ("小程序",),
+    "微前端": ("微前端",),
 }
 
-# 通用领域同义词（同一概念组）。
-_GENERAL_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "后端": ("后端", "服务端"),
+# 岗位族概念（策展）：猎头搜「前端/算法/运维」时，它就是硬条件而非模糊关键词。
+# canonical 取最常见的写法，避免改动历史证据文本里的展示名。
+_ROLE_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "前端": ("前端", "前端开发", "Web前端", "web前端", "大前端", "前端工程师"),
+    "后端": ("后端", "服务端", "后端开发", "服务端开发", "后端工程师"),
+    "算法工程师": ("算法工程师", "算法", "算法开发"),
+    "测试工程师": ("测试工程师", "测试开发", "测开", "QA", "软件测试"),
+    "运维工程师": ("运维工程师", "运维", "SRE"),
+    "数据开发": ("数据开发", "数仓开发", "数据仓库开发", "ETL", "大数据开发"),
+    "数据分析": ("数据分析", "数据分析师"),
+    "数据挖掘": ("数据挖掘",),
+    "全栈": ("全栈", "全栈工程师", "FullStack"),
+    "架构师": ("架构师", "系统架构师", "技术架构师"),
+    "产品经理": ("产品经理",),
 }
 
-# casefold -> canonical（仅技能）。
+# 行业/领域概念（仅展开）：只做两边别名对齐，不参与策展门槛。
+_INDUSTRY_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "电子商务": ("电子商务", "电商"),
+    "物联网": ("物联网", "IoT"),
+    "云计算": ("云计算", "Cloud Computing"),
+    "大数据": ("大数据", "Big Data"),
+    "区块链": ("区块链", "Blockchain"),
+    "人工智能": ("人工智能", "AI"),
+    "金融科技": ("金融科技", "FinTech"),
+    "医疗健康": ("医疗健康", "Healthcare"),
+    "在线教育": ("在线教育",),
+    "智能制造": ("智能制造",),
+}
+
+# 已策展概念（技能 + 岗位族）：is_curated_concept 的唯一判据。
+_CURATED_CONCEPTS: dict[str, tuple[str, ...]] = {**_SKILL_CONCEPTS, **_ROLE_CONCEPTS}
+_CURATED_CANONICALS = frozenset(_CURATED_CONCEPTS)
+
+# 全部概念（含行业泛词）：文档侧展开、查询侧概念解析共用。
+_ALL_CONCEPTS: dict[str, tuple[str, ...]] = {**_CURATED_CONCEPTS, **_INDUSTRY_CONCEPTS}
+_CONCEPT_ALIASES: dict[str, tuple[str, ...]] = _ALL_CONCEPTS
+
+# casefold -> canonical（技能）：沿用原语义，只服务 normalize_skill（JD 匹配侧也依赖它）。
 _SKILL_NORMALIZE: dict[str, str] = {}
 for _canonical, _aliases in _SKILL_CONCEPTS.items():
     for _alias in _aliases:
         _SKILL_NORMALIZE[_alias.casefold()] = _canonical
 
-# casefold -> canonical（技能 + 通用同义词），供概念解析。
-_CONCEPT_NORMALIZE = dict(_SKILL_NORMALIZE)
-for _canonical, _aliases in _GENERAL_SYNONYMS.items():
+# casefold -> canonical（技能 + 岗位族 + 行业）：供概念解析与文档侧词展开。
+_CONCEPT_NORMALIZE: dict[str, str] = {}
+for _canonical, _aliases in _ALL_CONCEPTS.items():
     for _alias in _aliases:
-        _CONCEPT_NORMALIZE[_alias.casefold()] = _canonical
+        _CONCEPT_NORMALIZE.setdefault(_alias.casefold(), _canonical)
 
-# canonical -> 展示别名（技能 + 通用同义词）。
-_CONCEPT_ALIASES: dict[str, tuple[str, ...]] = {**_SKILL_CONCEPTS, **_GENERAL_SYNONYMS}
-
-# canonical -> casefold 别名（用于 FTS 文档展开）。
-_SKILL_FOLDED: dict[str, tuple[str, ...]] = {
+# canonical -> casefold 别名（文档侧展开用，覆盖全部三组）。
+_CONCEPT_FOLDED: dict[str, tuple[str, ...]] = {
     canonical: tuple(alias.casefold() for alias in aliases)
-    for canonical, aliases in _SKILL_CONCEPTS.items()
+    for canonical, aliases in _ALL_CONCEPTS.items()
 }
 
 # 学历：canonical -> casefold 别名（与过滤词表共用同一来源）。
@@ -108,16 +164,23 @@ _DEGREE_FOLDED = {c: tuple(a) for c, a in _DEGREE_FOLDED.items()}
 
 # 带标点/多词的技术标记：必须原子保留，不能被子串或标点切分破坏。
 _TECH_TOKEN_RE = re.compile(
-    r"C\+\+|C#|\.NET|Node\.js|Spring\s+Boot|Spring\s+Cloud\s+Alibaba|Spring\s+Cloud|Spring\s+AI",
+    r"C\+\+|C#|\.NET|Node\.js|Spring\s+Boot|Spring\s+Cloud\s+Alibaba|Spring\s+Cloud|Spring\s+AI|CI/CD|CICD",
     re.IGNORECASE,
 )
 
-# jieba 自定义词典（中文领域术语 + 英文技术词），保证不被切碎。
+# jieba 自定义词典（中文领域术语 + 英文技术词 + 岗位族），保证不被切碎。
 for _word in (
     "JavaScript", "TypeScript", "Kubernetes", "Spring Boot", "Node.js",
     "Spring Cloud", "Spring Cloud Alibaba", "Spring AI", "Nacos", "Seata",
     "Sentinel", "Dubbo", "MyBatis", "Avaloq", "RAG",
     "云原生", "机器学习", "深度学习", "大模型", "微服务", "后端", "服务端",
+    "数据仓库", "数仓", "消息队列", "持续集成", "自然语言处理", "计算机视觉",
+    "推荐系统", "电子商务", "物联网", "云计算", "大数据", "区块链", "人工智能",
+    "金融科技", "医疗健康", "在线教育", "智能制造", "微前端",
+    "前端", "前端开发", "大前端", "后端开发", "服务端开发", "算法工程师", "算法开发",
+    "测试工程师", "测试开发", "测开", "软件测试", "运维工程师", "数据开发", "数仓开发",
+    "数据分析", "数据分析师", "数据挖掘", "全栈", "全栈工程师", "架构师", "系统架构师",
+    "产品经理",
 ):
     jieba.add_word(_word)
 
@@ -132,12 +195,12 @@ def normalize_skill(value: str) -> str:
 
 
 def is_curated_concept(canonical: str) -> bool:
-    """该 canonical 是否为词表已策展的概念（技能/通用同义词），而非查询里的通用词。
+    """该 canonical 是否为词表已策展的概念（技能/岗位族），而非查询里的通用词。
 
     用于布尔 AND 只约束「技能类」概念：JD 级查询会解析出大量通用词（负责/熟悉/经验），
-    要求全部命中无解。
+    要求全部命中无解。行业/领域泛词只做别名展开，不算策展概念。
     """
-    return canonical in _CONCEPT_ALIASES
+    return canonical in _CURATED_CANONICALS
 
 
 def tokenize_lexical_text(text: str) -> tuple[str, ...]:
@@ -170,14 +233,18 @@ def _dedupe(tokens: Iterable[str]) -> tuple[str, ...]:
 
 
 def expand_document_tokens(values: Iterable[str]) -> tuple[str, ...]:
-    """文档侧展开：每个技能规范为 canonical 并展开全部别名（casefold、去重）。"""
+    """文档侧展开：命中的概念统一规范为 canonical 并展开其全部别名（casefold、去重）。
+
+    覆盖技能、岗位族与行业泛词三组 —— 文档侧与查询侧用同一份表，写法差异才能互相命中
+    （例如简历写「数仓」、查询写「数据仓库」）。
+    """
     tokens: list[str] = []
     for value in values:
         if not value:
             continue
         for token in tokenize_lexical_text(value):
-            canonical = _SKILL_NORMALIZE.get(token, token)
-            tokens.extend(_SKILL_FOLDED.get(canonical, (token,)))
+            canonical = _CONCEPT_NORMALIZE.get(token, token)
+            tokens.extend(_CONCEPT_FOLDED.get(canonical, (token,)))
     return _dedupe(tokens)
 
 

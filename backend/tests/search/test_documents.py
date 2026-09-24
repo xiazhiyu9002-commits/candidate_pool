@@ -1,4 +1,6 @@
 from kerui_recruit.search.documents import (
+    PARENT_SKILL_LIMIT,
+    _CHILD_PREFIX_MAX,
     build_candidate_document,
     build_child_documents,
     build_candidate_document_b,
@@ -128,6 +130,15 @@ def test_location_terms_only_carry_current_location() -> None:
     assert doc["location_terms"] == ["杭州"]
 
 
+def test_location_terms_are_normalized_for_precise_filtering() -> None:
+    """非规范城市写法必须归一化，否则 array_has_any 永远召不回这些行。"""
+    doc = build_candidate_document({"location": "广东省深圳市"})
+    assert doc["location_terms"] == ["深圳"]
+    assert build_candidate_document({"location": "成都/杭州"})["location_terms"] == ["成都", "杭州"]
+    # 认不出的写法原样保留，不能把值弄空。
+    assert build_candidate_document({"location": "远程"})["location_terms"] == ["远程"]
+
+
 def test_body_index_text_includes_experience_and_project_summaries() -> None:
     """可选「检索正文」应包含工作职责与项目描述，但不含 tech_stack。"""
     doc = build_candidate_document({
@@ -187,6 +198,63 @@ def test_build_child_documents_includes_project_name_and_business_scene() -> Non
     assert "智能推荐系统" in project["vector_text"]
     assert "电商" in project["vector_text"]
     assert "电商" in project["keyword_index_text"]
+
+
+def test_v9_parent_vector_keeps_semantic_surface_only() -> None:
+    """v9 父向量：保留职业定位 / 业务方向 / 最近岗位名 / 技术概览，排除弱语义字段。"""
+    doc = build_candidate_document({
+        "name": "张三",
+        "phone": "13800138000",
+        "skills": ["Java"],
+        "ai_profile_summary": "负责交易系统开发",
+        "educations": [{"school": "北京大学", "degree": "MASTER", "major": "计算机"}],
+        "location": "上海",
+        "total_years": 5,
+        "current_company": "腾讯科技",
+        "current_title": "技术专家",
+        "business_directions": ["PAYMENT"],
+    })
+    vector_text = doc["vector_text"]
+    for excluded in ("北京大学", "上海", "5年", "张三", "13800138000", "腾讯科技", "MASTER"):
+        assert excluded not in vector_text
+    assert "交易系统" in vector_text
+    assert "技术专家" in vector_text
+    assert "Java" in vector_text
+    assert "支付与清结算" in vector_text
+    # 精确筛选仍走词法面与结构化列，不受父向量口径影响。
+    assert "北京大学" in doc["keyword_text"]
+    assert "上海" in doc["keyword_text"]
+
+
+def test_v9_parent_skills_are_capped() -> None:
+    doc = build_candidate_document({"skills": [f"Skill{i}" for i in range(PARENT_SKILL_LIMIT + 10)]})
+    tokens = doc["vector_text"].split()
+    assert len([token for token in tokens if token.startswith("Skill")]) == PARENT_SKILL_LIMIT
+    # keyword 面不做截断，精确筛选与 FTS 仍能看到全部技能。
+    assert f"Skill{PARENT_SKILL_LIMIT + 9}" in doc["keyword_text"]
+
+
+def test_v9_child_prefix_is_bounded() -> None:
+    """子片段的职业定位前缀必须压到 _CHILD_PREFIX_MAX 以内，避免淹没本段经历。"""
+    long_profile = "很长的职业定位" * 20
+    children = build_child_documents({
+        "ai_profile_compact": long_profile,
+        "experiences": [{"company": "某公司", "title": "工程师", "summary": "负责支付系统"}],
+    })
+    experience = next(c for c in children if c["kind"] == "experience")
+    assert experience["vector_text"].startswith(long_profile[:_CHILD_PREFIX_MAX])
+    assert long_profile[:_CHILD_PREFIX_MAX + 1] not in experience["vector_text"]
+    assert "负责支付系统" in experience["vector_text"]
+
+
+def test_v9_experience_vector_includes_tech_stack() -> None:
+    children = build_child_documents({
+        "experiences": [{"company": "某公司", "title": "工程师", "tech_stack": ["Kafka", "Redis"], "summary": "支付"}],
+    })
+    experience = next(c for c in children if c["kind"] == "experience")
+    assert "Kafka" in experience["vector_text"]
+    assert "Redis" in experience["vector_text"]
+    assert "kafka" in experience["keyword_index_text"]
 
 
 def test_variant_b_vector_excludes_school_location_years_and_name() -> None:

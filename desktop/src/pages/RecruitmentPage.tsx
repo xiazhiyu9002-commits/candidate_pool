@@ -93,7 +93,7 @@ export function RecruitmentPage({
                       <tr key={item.id}>
                         <td><input type="checkbox" aria-label={`选择 ${item.candidate_name || item.candidate_id}`} checked={selectedCaseIds.has(item.id)} onChange={() => setSelectedCaseIds((current) => { const next = new Set(current); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next; })} /></td>
                         <td><strong>{item.candidate_name || item.candidate_id}</strong></td>
-                        <td>{item.company || ""} · {item.jd_title || item.jd_id}</td>
+                        <td>{item.company || ""} · {item.jd_title || item.jd_id}{item.jd_deleted && <span className="muted">（岗位已删除）</span>}</td>
                         <td>{stageBadge(item.stage)}</td>
                         <td>{item.last_event ? `${item.last_event}${dateText ? ` · ${dateText}` : ""}` : "—"}</td>
                         <td>

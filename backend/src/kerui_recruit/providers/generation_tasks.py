@@ -50,7 +50,7 @@ _RESUME_PARSE_PROMPT = """你是资深招聘顾问，负责把简历原文解析
 - experiences：工作经历数组，每项含 company（公司名）、title（职位）、start_date（起始时间，如 2020.07）、end_date（结束时间，在职填"至今"）、location（该段工作所在城市，无法判断填 null）、industry（该段工作所属行业）、summary（该段工作做了什么，可概括多个项目点）；
 - projects：项目经历数组，每项含 name（项目名）、tech_stack（技术栈，如 Go/微服务）、business_scene（业务场景一句话）、summary（项目职责或成果）；
 - ai_profile_summary：{candidate_inline_rule}；
-- ai_profile_points：画像分点数组，每项含 text（一句话要点，覆盖画像中最核心的 3~5 条，每条与 ai_profile_summary 事实一致，不增删改义）与 evidence_paths（证据路径数组，如 ["experiences[0].summary"] / ["projects[0].summary"] / ["skills"]，没有证据填空数组）；
+- ai_profile_points：画像分点数组，每项含 text（从 ai_profile_summary 中**逐字截取**的原句或原句连续片段，覆盖其中最核心的 3~5 条；不得改写、不得新增、不得调整语序）与 evidence_paths（证据路径数组，如 ["experiences[0].summary"] / ["projects[0].summary"] / ["skills"]，没有证据填空数组）；
 - ai_profile_compact：{compact_length}浓缩，概括画像最核心的定位与方向，与 ai_profile_summary 事实一致；
 - career_directions：职业方向**大类**数组（最多 2 个），只能从下方「职业方向词表」里的大类代码中选择；有技术证据时至少 1 个，只有完全无法判断时才输出空数组；第一个元素即主方向；
 - career_specializations：职业方向**细分**数组，每个已选大类下最多 2 个，只能选该大类下列出的细分代码；无证据不产出，不要为了凑数填满；
@@ -61,7 +61,7 @@ _RESUME_PARSE_PROMPT = """你是资深招聘顾问，负责把简历原文解析
 - 优先从原文提取，允许对年限、学历、行业做合理推断；
 - 同一段工作下的多个项目点，应拆成独立的 projects 条目，同时 experiences 的 summary 概括该段整体；
 - skills、summary、experiences、projects 是判定解析质量的关键字段：凡原文有证据就必须完整、规范输出，不得因内容较多而省略、合并或只写笼统概括；
-- ai_profile_summary 与 ai_profile_points 是同一画像的两种形态，必须同源同事实：分点不能出现整体段落里没有的事实，也不能遗漏整体段落里的关键事实；
+- ai_profile_summary 与 ai_profile_points 是同一画像的两种形态，必须同源同事实：先写好 ai_profile_summary 这一段，分点必须逐字取自该段（原句或原句连续片段），不得改写、不得新增，也不得遗漏该段里的关键事实；
 - 未出现且无法推断的字段填 null，方向/技能/经历/教育列表可为空数组；
 - 只输出 JSON 对象，不要输出 markdown 代码块或任何多余文字。
 
@@ -108,7 +108,7 @@ _JD_PARSE_PROMPT = """你是资深招聘顾问，负责把 JD 解析为可检索
 - plus_project_types：加分场景-项目类型数组（如 高并发交易系统/大模型应用）；
 - summary：岗位最核心要求一句话，不超过 60 字；
 - candidate_profile：{jd_inline_rule}；
-- candidate_profile_points：画像分点数组，每项含 text（一句话要点，覆盖 candidate_profile 中最核心的 3~5 条，每条与 candidate_profile 事实一致，不增删改义）与 evidence_paths（证据路径数组，如 ["core_duties[0]"] / ["required_skills[0]"] / ["requirements[0]"]，没有证据填空数组）；
+- candidate_profile_points：画像分点数组，每项含 text（从 candidate_profile 中**逐字截取**的原句或原句连续片段，覆盖其中最核心的 3~5 条；不得改写、不得新增、不得调整语序）与 evidence_paths（证据路径数组，如 ["core_duties[0]"] / ["required_skills[0]"] / ["requirements[0]"]，没有证据填空数组）；
 - candidate_profile_compact：{compact_length}浓缩，概括最核心的寻访口径，与 candidate_profile 事实一致；
 - requirements：数组，每项含 kind（MUST 必备 / PLUS 加分 / EXCLUDE 排除）、label（如 技能/学历/行业/地点/证书）、value（具体值）。
 - {constraint_spec}
@@ -117,7 +117,7 @@ _JD_PARSE_PROMPT = """你是资深招聘顾问，负责把 JD 解析为可检索
 - business_directions：**业务方向**数组（最多 2 个），只能从下方「业务方向词表」中选择；依据岗位名称、职责描述里的业务细节、项目/业务方向判断；无法判断时输出空数组；
 - direction_assessment：职业方向评估对象，字段：primary（主方向，必须等于 career_directions 的第一个元素）、secondary（次方向，可空；与主方向不同且证据次强时给出）、confidence（high/medium/low；仅有技能或职位名等单一来源时不得 high）、evidence_paths（证据路径数组，如 ["core_duties[0]","required_skills[0]"]，只写字段路径不复制正文）、management（true/false，是否有明显团队管理/招聘/绩效/预算等职责）、taxonomy_version（固定 "4"）；管理经历与技术专业并存时 primary 仍写技术专业、management 为 true；
 
-规则：必须/优先/排除分别识别，不能把加分当必须；required_skills、core_duties、requirements、candidate_profile 是判定解析质量的关键字段，凡 JD 原文有证据就必须完整、规范输出；没有证据填 null 或空；candidate_profile 与 candidate_profile_points 是同一画像的两种形态，必须同源同事实，分点不能出现整体段落里没有的事实，也不能遗漏整体段落里的关键事实；只输出 JSON 对象，不要 markdown。
+规则：必须/优先/排除分别识别，不能把加分当必须；required_skills、core_duties、requirements、candidate_profile 是判定解析质量的关键字段，凡 JD 原文有证据就必须完整、规范输出；没有证据填 null 或空；candidate_profile 与 candidate_profile_points 是同一画像的两种形态，必须同源同事实：先写好 candidate_profile 这一段，分点必须逐字取自该段（原句或原句连续片段），不得改写、不得新增，也不得遗漏该段里的关键事实；只输出 JSON 对象，不要 markdown。
 
 职业方向判定规则（严格，宁缺毋滥）：
 - 证据优先级：**「优先项 / 重点项 / 核心职责 / 必须具备」对应的方向必须纳入** > 一般职责描述 > 技能列表 > 职位名称。**禁止只凭职位名称判定方向**；职位名只在其他证据缺失时作参考，不得单独据此判定；
@@ -158,6 +158,32 @@ class JdSplit(BaseModel):
     chunks: list[str] = Field(default_factory=list)
 
 
+# 送模型的正文上限（字符）。简历/JD 原文此前是**整段原样**拼进提示词：一份几十页的
+# 扫描件 OCR 结果或超长 JD 会直接把请求顶爆（上游按「context length / too long」拒绝，
+# 映射为 E_API_INPUT），或被上游静默截断在中间、丢掉尾部关键信息。
+# 超限时按「保头 + 保尾 + 中段省略」截断，并在正文里明确声明省略了多少字符。
+_MAX_MODEL_INPUT_CHARS = 20000
+_HEAD_RATIO = 0.7
+
+
+def truncate_model_input(text: str, *, limit: int = _MAX_MODEL_INPUT_CHARS) -> str:
+    """把送模型的正文限制在上限内：保头 + 保尾，中段以显式省略标记替代。
+
+    保头多于保尾：简历的姓名/联系方式/概述与最近的经历都在前部，尾部多是更早的经历。
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    head = int(limit * _HEAD_RATIO)
+    tail = limit - head
+    omitted = len(text) - limit
+    return (
+        f"{text[:head]}\n\n"
+        f"……（此处省略 {omitted} 个字符，原文过长）……\n\n"
+        f"{text[-tail:]}"
+    )
+
+
 def _resume_prompt_kwargs() -> dict[str, str]:
     """简历解析提示词的占位符取值（文本解析与视觉解析共用，避免口径漂移）。"""
     return {
@@ -180,9 +206,10 @@ def _jd_prompt_kwargs() -> dict[str, str]:
 
 
 def render_resume_parse_prompt(resume_text: str) -> str:
-    """文本简历解析提示词：末尾输入段是简历正文。"""
+    """文本简历解析提示词：末尾输入段是简历正文（超长时按上限截断）。"""
     return _RESUME_PARSE_PROMPT.format(
-        **_resume_prompt_kwargs(), resume_block=f"简历原文：\n{resume_text}"
+        **_resume_prompt_kwargs(),
+        resume_block=f"简历原文：\n{truncate_model_input(resume_text)}",
     )
 
 
@@ -196,8 +223,10 @@ def render_resume_vision_parse_prompt(image_instruction: str) -> str:
 
 
 def render_jd_parse_prompt(jd_text: str) -> str:
-    """文本 JD 解析提示词：末尾输入段是 JD 正文。"""
-    return _JD_PARSE_PROMPT.format(**_jd_prompt_kwargs(), jd_block=f"JD 原文：\n{jd_text}")
+    """文本 JD 解析提示词：末尾输入段是 JD 正文（超长时按上限截断）。"""
+    return _JD_PARSE_PROMPT.format(
+        **_jd_prompt_kwargs(), jd_block=f"JD 原文：\n{truncate_model_input(jd_text)}"
+    )
 
 
 def render_jd_vision_parse_prompt(image_instruction: str) -> str:

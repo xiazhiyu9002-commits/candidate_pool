@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from kerui_recruit.db import models as _models
 from kerui_recruit.db.base import Base
-from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.migrate import SCHEMA_VERSION, migrate
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.db.upgrades import Upgrade
 
@@ -41,7 +41,7 @@ def test_migrate_upgrades_v1_to_v8_after_snapshot(tmp_path: Path) -> None:
     case_columns = {column["name"] for column in inspect(engine).get_columns("candidate_job_case")}
     tables = set(inspect(engine).get_table_names())
     snapshots = list(tmp_path.glob("recruit.pre-v*-to-v*.sqlite3"))
-    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    assert versions == list(range(1, SCHEMA_VERSION + 1))
     assert candidate is not None and candidate.display_name == "升级保留样本"
     assert "ix_task_status_updated" in indexes
     assert {"confidence", "is_hiring", "session_id", "synthesized_json", "posted_time", "salary_range", "level", "requirements"} <= lead_columns

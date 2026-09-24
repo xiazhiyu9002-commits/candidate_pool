@@ -44,14 +44,41 @@ test("hybrid rewrite off sends rewrite_enabled=false", async ({ page }) => {
   expect(bodies[0]).toMatchObject({ mode: "hybrid", operator: "smart", rewrite_enabled: false });
 });
 
+test("hybrid forwards the body toggle and the AI parse toggle", async ({ page }) => {
+  const bodies = await captureSearchBodies(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "混合" }).click();
+  await page.getByLabel("检索工作与项目经历正文").check();
+  await page.getByLabel("AI 智能解析").check();
+  await page.getByLabel("人才搜索").fill("上海 5 年后端");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  // 混合模式下正文开关与 AI 解析都应真正下发：搜索前置解析（parse）与 FTS 通道（search_body）互不影响。
+  expect(bodies[0]).toMatchObject({ mode: "hybrid", search_body: true, parse_enabled: true });
+});
+
+test("keyword mode forwards the AI parse toggle without rewrite", async ({ page }) => {
+  const bodies = await captureSearchBodies(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "关键词" }).click();
+  await page.getByLabel("AI 智能解析").check();
+  await page.getByLabel("人才搜索").fill("上海 5 年后端");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  // 关键词模式仍不接受语义改写（没有可消费的通道），但 AI 解析照常生效。
+  expect(bodies[0]).toMatchObject({ mode: "keyword", rewrite_enabled: false, parse_enabled: true });
+});
+
 test("reload preserves keyword operator and rewrite preferences", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("search-keyword-operator:v1", "or");
     localStorage.setItem("search-rewrite-enabled:v1", "true");
+    localStorage.setItem("search-parse-enabled:v1", "true");
   });
   await page.goto("/");
   await page.getByRole("button", { name: "关键词" }).click();
   await expect(page.getByLabel("关键词逻辑")).toHaveValue("or");
+  await expect(page.getByLabel("AI 智能解析")).toBeChecked();
   await page.getByRole("button", { name: "向量" }).click();
   await expect(page.getByLabel("AI 语义改写")).toBeChecked();
 });

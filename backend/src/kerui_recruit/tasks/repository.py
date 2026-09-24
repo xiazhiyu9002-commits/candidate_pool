@@ -187,14 +187,22 @@ class TaskRepository:
         *,
         error_code: str,
         error_message: str,
+        retryable: bool = True,
     ) -> None:
+        """标记失败。``retryable=False`` 时**直接进终态**，不再按 max_attempts 重试。
+
+        为什么需要这个开关：重试的前提是「换个时机/换个供应商可能就好了」。而
+        「这份原文抽不出够用的字段」是内容级判定，同样的输入重试只会把同一次调用再烧一遍
+        （还烧钱、还占 worker）。实测 `.dev-data` 里就有 `attempts=2` 还在 `RETRY_WAIT`
+        的 `E_PARSE_INCOMPLETE`，而它的正确出口是让用户点「重新解析」。
+        """
         with self.session_factory() as session, session.begin():
             task = self._owned_running_task(session, task_id, worker_id)
             task.error_code = error_code
             task.error_message = error_message[:2_000]
             task.lease_owner = None
             task.lease_expires_at = None
-            if task.attempts >= task.max_attempts:
+            if not retryable or task.attempts >= task.max_attempts:
                 task.status = "DEAD_LETTER"
                 task.next_retry_at = None
             else:

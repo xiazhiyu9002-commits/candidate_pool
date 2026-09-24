@@ -38,6 +38,10 @@ class Candidate(IdMixin, Base):
     workflow_previous_status: Mapped[str | None] = mapped_column(String(32))
     total_years: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
     highest_degree: Mapped[str | None] = mapped_column(String(32))
+    # 沟通记录：单条自由文本，记录「性格不好、不乐意沟通」这类偏软性信息。
+    # 刻意**不**进画像输入、不进索引文档、不参与向量：这类主观判断一旦混进画像，
+    # 会顺着画像污染向量与检索结果；它只需要一个地方存下来并展示。
+    communication_note: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     documents: Mapped[list[ResumeDocument]] = relationship(
         back_populates="candidate",
@@ -281,9 +285,10 @@ class CandidateJobCase(IdMixin, Base):
         ForeignKey("candidate.id", ondelete="SET NULL"),
         nullable=True,
     )
-    jd_id: Mapped[str] = mapped_column(
-        ForeignKey("jd.id", ondelete="CASCADE"),
-        nullable=False,
+    # 岗位物理删除后置空（岗位快照保留），故可空 + SET NULL，不再级联删流程。
+    jd_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jd.id", ondelete="SET NULL"),
+        nullable=True,
     )
     stage: Mapped[str] = mapped_column(String(24), default="待评估", nullable=False)
     template_id: Mapped[str | None] = mapped_column(
@@ -300,8 +305,13 @@ class CandidateJobCase(IdMixin, Base):
     candidate_email_snapshot_encrypted: Mapped[str | None] = mapped_column(Text)
     candidate_profile_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     candidate_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 岗位物理删除后的流程快照：岗位删后 jd_id 置空，流程、轮次与面试记录仍可读。
+    jd_title_snapshot: Mapped[str | None] = mapped_column(String(200))
+    jd_company_snapshot: Mapped[str | None] = mapped_column(String(200))
+    jd_profile_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    jd_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     candidate: Mapped[Candidate | None] = relationship()
-    jd: Mapped[Jd] = relationship()
+    jd: Mapped[Jd | None] = relationship()
     stage_events: Mapped[list[StageEvent]] = relationship(
         back_populates="case",
         cascade="all, delete-orphan",
@@ -534,6 +544,8 @@ class SearchReview(IdMixin, Base):
     verdict: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
     highlights: Mapped[list[str] | None] = mapped_column(JSON)
     risks: Mapped[list[str] | None] = mapped_column(JSON)
+    # 判据依据（不进 UI）：来源、是否被一致性兜底降级等，供排查「为什么判成待核」。
+    basis: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     failed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error: Mapped[str | None] = mapped_column(String(80))
 
@@ -655,6 +667,30 @@ class Reminder(IdMixin, Base):
     case_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_job_case.id", ondelete="CASCADE"), index=True)
     paused_by_workflow: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     time_basis: Mapped[str] = mapped_column(String(24), default="UTC", nullable=False)
+
+
+class CandidateReminder(IdMixin, Base):
+    """候选人提醒：使用者在人才库某一行建立的自定义待办。
+
+    与 ``Reminder`` 是两套东西——后者挂在招聘流程上、有到期时间、到期会发邮件、
+    且会被流程终态暂停。候选人提醒**没有日期**，建好即出现在「今日待办」，
+    勾选表示**任务完成**并移出列表（与系统项「今天处理过、次日重置」不同）。
+
+    ``candidate_name_snapshot`` 用于「固定显示人名」：候选人改名或删除后，
+    提醒行仍显示建立时的人名。
+    """
+    __tablename__ = "candidate_reminder"
+    __table_args__ = (
+        Index("ix_candidate_reminder_open", "candidate_id", "done"),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(String(500), nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class IndexSyncRecord(IdMixin, Base):
@@ -854,6 +890,23 @@ class DailyFollowupState(IdMixin, Base):
 
     last_evening_date: Mapped[str | None] = mapped_column(String(10))
     last_morning_date: Mapped[str | None] = mapped_column(String(10))
+
+
+class DailyTodoCheck(IdMixin, Base):
+    """「今日待办」系统项的当日勾选记录。
+
+    勾选只表示「使用者今天处理过这一项」，**不代表任务完成**：记录带日期，
+    次日按当天日期查询自然查不到，即回到未勾选——每日重置因此不需要任何定时任务。
+
+    与 ``candidate_reminder`` 的勾选语义不同：后者的勾选是「任务完成」，永久生效。
+    """
+    __tablename__ = "daily_todo_check"
+    __table_args__ = (
+        UniqueConstraint("check_date", "item_key", name="uq_daily_todo_check_date_item"),
+    )
+
+    check_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    item_key: Mapped[str] = mapped_column(String(120), nullable=False)
 
 
 class School(IdMixin, Base):

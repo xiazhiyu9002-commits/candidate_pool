@@ -166,12 +166,27 @@ function profileSummaryText(summary: string | null | undefined): string {
   return first.length > 40 ? first.slice(0, 40) + "…" : first;
 }
 
-// 分点画像：优先结构化分点，否则按整体段落换行拆点（与后端 _profile_point_items 一致）。
-function profilePoints(p: ParsedResumeData | null | undefined): string[] {
+// 分点画像：优先结构化分点，否则按整体段落换行拆点。
+//
+// 后端 `providers/profile_pair.py` 的同名口径是**唯一权威**——它还会在读取时把历史遗留的
+// 碎片分点按整体段落重算（`repaired_profile_view`）。这里必须与它一致，否则同一候选人
+// 在人才库与岗位管理两处显示不同。所以本函数导出给匹配结果表复用，不再各写一份。
+export function profilePoints(
+  p: { ai_profile_points?: { text: string }[]; ai_profile_summary?: string | null } | null | undefined,
+): string[] {
   const points = (p?.ai_profile_points ?? []).map((x) => x.text).filter(Boolean);
   if (points.length) return points;
   return (p?.ai_profile_summary ?? "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
+
+/**
+ * 画像既无分点也无整体段落时的占位文案。
+ *
+ * 不用 `HoverText` 默认的空值 `—`：`.dev-data` 里确实存在「分了画像但内容为空」的记录
+ * （实测有 1 个 JD 的候选人画像 `points=0 narrative_len=0`），裸露的 `—` 会被读成
+ * 「这个字段不存在」，而实际含义是「这条记录的画像还没生成」。
+ */
+export const EMPTY_PROFILE_TEXT = "未生成画像";
 
 // 供匹配结果等只读表格复用：按列 key 返回展示文本（与人才库表格一致）。
 export function candidateColumnText(key: CandidateColumnKey, parsed: ParsedResumeData | null, phone: string | null): string {
@@ -234,6 +249,73 @@ function profileBadge(p: ParsedResumeData | null | undefined) {
   return null;
 }
 
+/**
+ * 沟通记录单元格：单条自由文本，双击进入多行编辑。
+ *
+ * 这里是**候选人级备注**，与上方 AI 画像分区显示：画像由模型生成并参与向量检索；
+ * 沟通记录存的是「性格偏内向、沟通要多推一把」这类主观判断，刻意不进画像、不进索引，
+ * 避免污染向量与检索结果。
+ */
+function CommunicationNoteCell({
+  note,
+  onSave,
+}: {
+  note: string;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (draft === note) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } catch {
+      // 保存失败保持编辑态，让用户可以直接重试。
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <textarea
+        autoFocus
+        className="note-input"
+        rows={3}
+        aria-label="沟通记录"
+        value={draft}
+        disabled={saving}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(event) => {
+          // 多行文本里 Enter 是换行，交给失焦或 Esc 收尾。
+          if (event.key === "Escape") setEditing(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      className="note-cell"
+      title="双击记录沟通信息（不进 AI 画像、不参与检索）"
+      onDoubleClick={() => {
+        setDraft(note);
+        setEditing(true);
+      }}
+    >
+      <HoverText text={note} preview={note ? undefined : "＋ 沟通记录"} />
+    </span>
+  );
+}
+
 export interface CandidateRow {
   key: string;
   candidateId: string;
@@ -247,6 +329,8 @@ export interface CandidateRow {
   /** 搜索侧 AI 复核结论：亮点 / 风险点（未复核时为空）。 */
   highlights?: string[];
   risks?: string[];
+  /** 沟通记录：候选人级自由文本，与 AI 画像同格上下分栏展示。 */
+  communicationNote?: string | null;
 }
 
 export interface CandidateTableProps {
@@ -255,12 +339,16 @@ export interface CandidateTableProps {
   columnOrder: CandidateColumnKey[];
   onMoveColumn: (fromKey: CandidateColumnKey, toKey: CandidateColumnKey) => void;
   onUpdateField: (candidateId: string, field: string, value: unknown) => Promise<void>;
+  /** 保存沟通记录（候选人级备注，不进画像与索引）。 */
+  onSaveCommunicationNote: (candidateId: string, note: string) => Promise<void>;
   onEditEducation: (candidateId: string, educations: ParsedEducationData[]) => void;
   onEditProfile: (candidateId: string, summary: string | null, source: string | null, stale: boolean) => void;
   onMatch: (candidateId: string, name: string) => void;
   onPreview: (revisionId: string, name?: string, filename?: string) => void;
   onDownload: (revisionId: string, filename: string) => void;
   onCreateCase: (candidateId: string, name: string) => void;
+  /** 给该候选人建提醒：建好后出现在首页「今日待办」的「我的提醒」列。 */
+  onCreateReminder: (candidateId: string, name: string) => void;
   /** 常规重新解析（异常页才 OCR）；强制 OCR 是扫描件/乱码专用。 */
   onReparse: (revisionId: string) => Promise<void>;
   onForceReparse: (revisionId: string) => Promise<void>;
@@ -279,12 +367,14 @@ export function CandidateTable({
   columnOrder,
   onMoveColumn,
   onUpdateField,
+  onSaveCommunicationNote,
   onEditEducation,
   onEditProfile,
   onMatch,
   onPreview,
   onDownload,
   onCreateCase,
+  onCreateReminder,
   onReparse,
   onForceReparse,
   onOpenReview,
@@ -397,10 +487,21 @@ export function CandidateTable({
         const fullText = points.length > 0 ? points.join("\n") : (p?.ai_profile_summary ?? "");
         return (
           <td key={key}>
-            <button className="cell-edit" onClick={() => onEditProfile(r.candidateId, p?.ai_profile_summary ?? null, p?.ai_profile_source ?? null, p?.ai_profile_stale ?? false)}>
-              <HoverText text={fullText} />
-            </button>
-            {profileBadge(p)}
+            {/* 上下分栏：上=AI 画像（进画像与向量），下=沟通记录（只存不检索）。 */}
+            <div className="cell-stack">
+              <div className="cell-stack__row">
+                <button className="cell-edit" onClick={() => onEditProfile(r.candidateId, p?.ai_profile_summary ?? null, p?.ai_profile_source ?? null, p?.ai_profile_stale ?? false)}>
+                  <HoverText text={fullText || EMPTY_PROFILE_TEXT} />
+                </button>
+                {profileBadge(p)}
+              </div>
+              <div className="cell-stack__row cell-stack__row--note">
+                <CommunicationNoteCell
+                  note={r.communicationNote ?? ""}
+                  onSave={(next) => onSaveCommunicationNote(r.candidateId, next)}
+                />
+              </div>
+            </div>
           </td>
         );
       }
@@ -474,6 +575,7 @@ export function CandidateTable({
                       items={[
                         { key: "parsed", label: "解析表", onSelect: () => onOpenParsed(r.candidateId, r.parsed) },
                         { key: "download", label: "下载", onSelect: () => onDownload(r.revisionId, r.filename || r.name) },
+                        { key: "reminder", label: "建提醒", onSelect: () => onCreateReminder(r.candidateId, r.name) },
                         { key: "reparse", label: "重新解析", onSelect: () => void onReparse(r.revisionId).catch(() => {}) },
                         { key: "ocr", label: "强制 OCR", onSelect: () => void onForceReparse(r.revisionId).catch(() => {}) },
                         { key: "delete", label: "删除", danger: true, onSelect: () => onDelete(r.candidateId) },

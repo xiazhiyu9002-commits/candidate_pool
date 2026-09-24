@@ -5,10 +5,11 @@ import { providerLabel } from "./AiServicesPanel";
 import { Button } from "../components/ui";
 
 const PROVIDER_ORDER: AiProviderId[] = [
-  "deepseek", "kimi_open", "qwen", "zhipu", "siliconflow", "kimi_code", "custom_openai",
+  "deepseek", "kimi_open", "qwen", "zhipu", "siliconflow",
+  "kimi_code", "qwen_code", "zhipu_code", "custom_openai",
 ];
 
-const COMPAT_STYLES = ["standard", "deepseek", "qwen", "zhipu", "siliconflow", "kimi_open"];
+const COMPAT_STYLES = ["standard", "deepseek", "kimi_open", "kimi_code", "qwen", "zhipu", "siliconflow"];
 
 const ROLES: { key: ModelRole; label: string }[] = [
   { key: "fast_text", label: "快速模型" },

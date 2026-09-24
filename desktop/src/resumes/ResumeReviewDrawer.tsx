@@ -11,6 +11,9 @@ export function ResumeReviewDrawer({ api, initialReview, onClose, onReparsed, on
   const [reparsing, setReparsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lock = useRef(false);
+  // 后端在**没有可用快速解析服务**时会回退本地确定性解析（不调用任何模型）。
+  // 这条兜底必须标出来，否则「解析成功但没有画像」会被误读成解析质量问题。
+  const localParse = review.extraction_diagnostics?.["ai_parse_route"] === "local";
 
   async function reparse(run: (revisionId: string) => Promise<void> | undefined) {
     if (lock.current) return;
@@ -32,6 +35,7 @@ export function ResumeReviewDrawer({ api, initialReview, onClose, onReparsed, on
       <div className="match-drawer-header"><div><h2>简历解析详情</h2><small>{review.status === "READY" ? "已入库" : "解析失败"} · {review.revision_id}</small></div><div className="case-actions">{onReparse && <button className="detail-button" disabled={reparsing} onClick={() => void reparse(onReparse)}>{reparsing ? "解析中…" : "重新解析"}</button>}{onForceReparse && <button className="detail-button" disabled={reparsing} title="整份走 OCR，适合扫描件或文本层乱码的简历" onClick={() => void reparse(onForceReparse)}>强制 OCR</button>}<button className="detail-button" onClick={onClose}>关闭</button></div></div>
       <div className="match-drawer-body">
         {review.error_message && <p className="review-notice">{review.error_message}</p>}
+        {localParse && <p className="review-notice" role="status">本次未使用 AI：当前没有可用的快速解析服务，已回退本地确定性解析，画像与结构化字段会明显偏少。请到「AI 设置」检查供应商配置与检测结果。</p>}
         {error && <p className="review-notice review-notice--error" role="alert">{error}</p>}
         <details open><summary>原始简历正文</summary><pre style={{ whiteSpace: "pre-wrap" }}>{review.raw_text || "暂无可用正文"}</pre></details>
         {review.parsed_data && <details><summary>已解析字段</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(review.parsed_data, null, 2)}</pre></details>}

@@ -1,4 +1,6 @@
 from pathlib import Path
+import asyncio
+import time
 
 import pytest
 from sqlalchemy import select
@@ -7,9 +9,10 @@ from sqlalchemy.orm import sessionmaker
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Blob, Candidate, IndexSyncRecord, ResumeDocument, ResumeRevision
 from kerui_recruit.db.session import create_engine_for
+from kerui_recruit.search.cities import normalize_location_terms
 from kerui_recruit.search.contracts import CandidateFilters
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
-from kerui_recruit.search.sync import IndexSyncService, enqueue_sync
+from kerui_recruit.search.sync import IndexSyncService, _TokenRateLimiter, enqueue_sync
 from kerui_recruit.soft_delete.service import SoftDeleteService
 
 
@@ -183,3 +186,165 @@ async def test_sync_retains_all_current_document_evidence(setup):
     assert index.get_revision_chunks(second_id)
     assert index.filter_search(CandidateFilters(preferred_locations=('北京',)), 10)
     assert index.filter_search(CandidateFilters(preferred_locations=('广州',)), 10)
+
+
+class _ConcurrencyEmbedding(Embedding):
+    """记录同时在飞的 embedding 请求数：验证投影确实按 concurrency 并发。"""
+
+    def __init__(self, *, delay: float = 0.05) -> None:
+        super().__init__()
+        self.delay = delay
+        self.in_flight = 0
+        self.peak = 0
+
+    async def embed_documents(self, texts):
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            return [[1.0, 0.0] for _ in texts]
+        finally:
+            self.in_flight -= 1
+
+
+def _seed_candidates(factory, count: int) -> None:
+    with factory() as session, session.begin():
+        for index in range(count):
+            candidate = Candidate(display_name=f"C{index}", status="AVAILABLE")
+            session.add(ResumeRevision(
+                document=ResumeDocument(candidate=candidate),
+                blob=Blob(content_sha256=f"{index:064d}", suffix=".pdf", size_bytes=1,
+                          storage_path=f"unused-{index}"),
+                content_sha256=f"{index:064d}", original_filename=f"{index}.pdf",
+                status="READY", is_current=True,
+                parsed_data={"name": f"C{index}", "skills": ["Python"]},
+            ))
+            session.flush()
+            enqueue_sync(session, "candidate", candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_sync_projects_concurrently_up_to_the_limit(tmp_path):
+    engine = create_engine_for(tmp_path / "db.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    _seed_candidates(factory, 6)
+    index = LanceDBSearchIndex(tmp_path / "index", vector_dimension=2)
+    embedding = _ConcurrencyEmbedding()
+    service = IndexSyncService(
+        session_factory=factory, index=index, embedding_provider=embedding,
+        tokens_per_minute=10 ** 9,  # 这条只验并发，不验预算
+    )
+
+    assert await service.run_once(batch_size=10, concurrency=3) == 6
+    assert embedding.peak == 3
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sync_publishes_serially_even_with_parallel_workers(tmp_path, monkeypatch):
+    """发布必须串行：``_publish`` 用 BEGIN IMMEDIATE 独占 SQLite 写锁，事务里还夹着一次
+    LanceDB 提交，锁持有时间远大于 busy_timeout(5s)。并发 worker 同时进入会互相超时
+    （表现为 outbox 长期 RETRY_WAIT + last_error=OperationalError），快照与 embedding 仍并发。
+    """
+    engine = create_engine_for(tmp_path / "db.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    _seed_candidates(factory, 6)
+    index = LanceDBSearchIndex(tmp_path / "index", vector_dimension=2)
+    service = IndexSyncService(
+        session_factory=factory, index=index, embedding_provider=_ConcurrencyEmbedding(),
+        tokens_per_minute=10 ** 9,
+    )
+
+    state = {"in_flight": 0, "peak": 0}
+    original = service._publish
+
+    def counting_publish(*args, **kwargs):
+        state["in_flight"] += 1
+        state["peak"] = max(state["peak"], state["in_flight"])
+        try:
+            time.sleep(0.05)  # 放大锁持有窗口，未串行时这里必然被并发进入
+            return original(*args, **kwargs)
+        finally:
+            state["in_flight"] -= 1
+
+    monkeypatch.setattr(service, "_publish", counting_publish)
+    assert await service.run_once(batch_size=10, concurrency=3) == 6
+    assert state["peak"] == 1
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sync_normalizes_location_terms_from_the_location_column(tmp_path):
+    """location_terms 必须与 location 列同源且已归一化。
+
+    现居硬过滤读 ``location_terms``、界面显示 ``location``：两者不同源时会出现
+    「显示苏州、按无锡筛」（实测 6/1477 行）。非规范写法（``广东省深圳市``）也必须
+    归一化，否则 ``array_has_any(["深圳"])`` 永远召不回这些行。
+    """
+    engine = create_engine_for(tmp_path / "db.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory() as session, session.begin():
+        candidate = Candidate(display_name="C0", status="AVAILABLE")
+        revision = ResumeRevision(
+            document=ResumeDocument(candidate=candidate),
+            blob=Blob(content_sha256="0" * 64, suffix=".pdf", size_bytes=1, storage_path="unused"),
+            content_sha256="0" * 64, original_filename="0.pdf", status="READY", is_current=True,
+            parsed_data={"name": "C0", "location": "广东省深圳市", "skills": ["Java"]},
+        )
+        session.add(revision)
+        session.flush()
+        enqueue_sync(session, "candidate", candidate.id)
+        revision_id = revision.id
+
+    index = LanceDBSearchIndex(tmp_path / "index", vector_dimension=2)
+    service = IndexSyncService(session_factory=factory, index=index,
+                               embedding_provider=Embedding(), tokens_per_minute=10 ** 9)
+    assert await service.run_once(batch_size=10) == 1
+
+    rows = [row for row in index.get_revision_chunks(revision_id) if row["chunk_type"] == "parent"]
+    assert rows, "父 chunk 应当已发布"
+    terms = set(rows[0]["location_terms"])
+    assert "深圳" in terms
+    # 同源不变量：按 location 列归一化出来的城市必须在词项里。
+    assert set(normalize_location_terms(rows[0]["location"])) <= terms
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sync_charges_embedding_budget_per_request(tmp_path):
+    """每次 embedding 前先向 token 预算申请额度：预算是按请求文本量扣的。"""
+    engine = create_engine_for(tmp_path / "db.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    _seed_candidates(factory, 3)
+    index = LanceDBSearchIndex(tmp_path / "index", vector_dimension=2)
+    service = IndexSyncService(
+        session_factory=factory, index=index, embedding_provider=Embedding(),
+        tokens_per_minute=10 ** 9,
+    )
+    charged: list[float] = []
+
+    class _RecordingBudget:
+        async def acquire(self, tokens: float) -> None:
+            charged.append(tokens)
+
+    service._embedding_budget = _RecordingBudget()
+
+    assert await service.run_once(batch_size=10, concurrency=3) == 3
+    assert len(charged) == 3
+    assert all(cost > 0 for cost in charged)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_token_rate_limiter_spends_budget_over_time():
+    """桶满时立即放行；用光后按 预算/60 的速度补充（1 token/秒 → 再要 1 个要等约 1 秒）。"""
+    limiter = _TokenRateLimiter(60)
+    await limiter.acquire(60)
+
+    started = time.monotonic()
+    await limiter.acquire(1)
+    assert time.monotonic() - started >= 0.8

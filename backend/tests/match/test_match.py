@@ -44,6 +44,7 @@ class FakeIndex:
             c
             for c in self.chunks
             if (request.filters.min_years is None or (c.total_years or 0) >= request.filters.min_years)
+            and (request.filters.max_years is None or (c.total_years or 0) <= request.filters.max_years)
             and (not degree_values or c.highest_degree in degree_values)
         ]
         return [
@@ -226,6 +227,45 @@ def test_duty_evidence_ranks_above_skill_only():
 
     # 技能覆盖、方向相同：有真实职责证据者应优先于仅列技能名者。
     assert with_evidence.total > without_evidence.total
+
+
+def test_plus_preference_lifts_ranking_without_rejecting():
+    """优先项命中率进入总分：命中者排在未命中者前，但两者都不被淘汰。
+
+    这是 skill / other_keyword 被降级为 PLUS 之后「精度靠排序补回来」的唯一机制。
+    """
+    service = MatchService(session_factory=None, search_service=None)
+
+    class _Rev:
+        id = "rev-1"
+        jd_id = "jd-1"
+        source_text = None
+        min_years = None
+        highest_degree = None
+        location = None
+        parsed_data = {
+            "direction": "BACKEND",
+            "required_skills": ["Java"],
+            "exact_constraints": [
+                {"kind": "skill", "operator": "OR", "alternatives": ["LangGraph"],
+                 "strength": "PLUS", "source": "inferred", "source_text": "LangGraph 优先"},
+            ],
+        }
+
+    context = MatchService._context(_Rev())
+    hit = SearchHit(
+        chunk_id="c1", candidate_id="cand-1", revision_id="r1", content="Java",
+        score=0.0, matched_channels=(), total_years=5.0, highest_degree="MASTER", location="上海",
+    )
+
+    matched = service._score_context(
+        context, hit, {"direction": "BACKEND", "skills": ["Java", "LangGraph"]}
+    )
+    missed = service._score_context(context, hit, {"direction": "BACKEND", "skills": ["Java"]})
+
+    assert matched.total > missed.total
+    assert matched.breakdown["preference"] == 1.0
+    assert missed.breakdown["preference"] == 0.0
 
 
 @pytest.mark.asyncio

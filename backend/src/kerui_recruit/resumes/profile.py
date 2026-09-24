@@ -57,8 +57,34 @@ class CandidateProfileGenerator:
         )
         return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
-    async def generate_pair(self, data: dict, instruction: str | None = None, previous: str | None = None, *, execution_context=None):
-        """一次结构化生成 facts + narrative + points + compact（同源）；失败回退单文本拆点。"""
+    async def generate_pair(self, data: dict, instruction: str | None = None, previous: str | None = None, *, execution_context=None, on_stage=None):
+        """一次结构化生成 facts + narrative + points + compact，并做一次校验驱动的定点重写。"""
+        from kerui_recruit.providers.profile_pair import produce_pair_with_vet
+
+        async def produce(rewrite_instruction: str | None, _rewrite_previous: str | None):
+            if rewrite_instruction is not None:
+                return await self._repair(rewrite_instruction, execution_context=execution_context)
+            return await self._produce_pair(
+                data, instruction=instruction, previous=previous, execution_context=execution_context)
+
+        return await produce_pair_with_vet(produce, side="candidate", logger=logger, on_stage=on_stage)
+
+    async def _repair(self, instruction: str, *, execution_context=None):
+        """定点修正：只把「草稿 + 违规原因 + 修正要求」发给模型，再按句读拆点。
+
+        不走完整画像模板：同一份证据下模型会把整篇画像原样返回，修正被忽略（实测）。
+        窄任务（只压缩/只删违规内容）它才照做；分点由确定性拆句得到，避免再赌一次 JSON。
+        """
+        from kerui_recruit.providers.profile_pair import build_profile_pair
+        text = await self._llm.complete_text(
+            [{"role": "user", "content": instruction}],
+            **({"execution_context": execution_context} if execution_context is not None else {}),
+            max_tokens=profile_spec.PROFILE_REWRITE_MAX_TOKENS,
+        )
+        return build_profile_pair(text)
+
+    async def _produce_pair(self, data: dict, instruction: str | None = None, previous: str | None = None, *, execution_context=None):
+        """产出一次双形态画像（不含校验）；结构化 JSON 不可用时退化为单文本拆点。"""
         from kerui_recruit.providers.profile_pair import ProfilePair, build_profile_pair, reconcile_pair
         if hasattr(self._llm, "complete_json"):
             prompt = profile_spec.CANDIDATE_PAIR_TEMPLATE.format(

@@ -10,6 +10,17 @@ from kerui_recruit.tasks.repository import TaskLeaseError, TaskRepository
 
 TaskHandler = Callable[[dict[str, Any], Callable[[int], None] | None], Awaitable[str | None]]
 
+# 重试同一个输入不会改变结果的失败码：它们描述的是**这份数据/这个请求本身**的问题，
+# 再试只是把同一次调用再烧一遍（还烧钱、还占 worker）。正常的出口是让人工介入
+# （换文件重新导入、或点「重新解析」用视觉模型补救）。
+#
+# 刻意**只收**内容级与请求级的确定性判定，不收网络/限流/供应商侧错误——那些正是重试的用武之地。
+_NON_RETRYABLE_CODES = frozenset({
+    "E_PARSE_INCOMPLETE",  # 内容级判定：原文里抽不出够用的字段
+    "E_STRUCTURED_EMPTY",  # 同上，结构化结果为空
+    "E_ENTITY_NOT_ELIGIBLE",  # 资格判定：同一个 JD/候选人在下一次重试里也不会变合法
+})
+
 
 def _error_code(error: Exception) -> str:
     code = getattr(error, "code", None)
@@ -90,12 +101,14 @@ class TaskWorker:
                 # 处理器在运行中通过 report 检测到取消/暂停，任务状态已由控制操作改变。
                 return True
             except Exception as error:
+                code = _error_code(error)
                 try:
                     self.repository.fail(
                         task.id,
                         self.worker_id,
-                        error_code=_error_code(error),
+                        error_code=code,
                         error_message=_error_message(error),
+                        retryable=code not in _NON_RETRYABLE_CODES,
                     )
                 except TaskLeaseError:
                     pass

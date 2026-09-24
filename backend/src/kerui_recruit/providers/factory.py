@@ -68,10 +68,20 @@ class _RoutedResumeParser:
     """远程解析优先，无可选路由时回退到本地确定性解析。"""
 
     def __init__(self, manager, local: ResumeParser) -> None:
+        self._manager = manager
         self._remote = AiResumeParser(manager.task_client(
             TaskKind.RESUME_PARSE, ModelRole.FAST_TEXT, ExecutionContext.BACKGROUND,
         ))
         self._local = local
+
+    def uses_remote_ai(self) -> bool:
+        """当前是否真有可用的远程快速解析路由。
+
+        没有时 `parse_resume` 会回退本地确定性解析（不调用任何模型）。调用方
+        （`resumes/pipeline.py`）据此把实际路线写进抽取诊断：**兜底不能静默**，
+        否则「界面显示解析成功、画像却空着」会被误读成供应商解析质量差。
+        """
+        return self._manager.has_role(ModelRole.FAST_TEXT)
 
     async def parse_resume(self, text: str):
         try:

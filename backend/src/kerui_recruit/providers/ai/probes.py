@@ -1,11 +1,13 @@
-"""模型发现与无隐私能力探测。
+﻿"""模型发现与无隐私能力探测。
 
 - 发现仅确立模型存在性，不确立能力；``/models`` 不可用时回退目录。
 - 探测只使用固定虚构文本、固定 JSON 与内置小图，绝不使用真实候选人数据。
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -25,18 +27,65 @@ from kerui_recruit.providers.ai.contracts import (
     TaskKind,
 )
 from kerui_recruit.providers.ai.openai_chat import OpenAIChatAdapter
+from kerui_recruit.providers.ai.pacing import THROTTLE_ERROR_CODES
 from kerui_recruit.providers.errors import ProviderError
+
+logger = logging.getLogger(__name__)
+
+# 探测口径版本。口径变化（如能力项、探测载荷）时递增，让已保存的旧探测结果失效、
+# 强制重探；否则用户会一直看到按旧口径算出的「可用」。
+PROBE_SCHEMA_VERSION = 2
+
+# 单次能力探测的超时预算（秒）。探测载荷都很小，不该按业务调用的 300 秒算：
+# 原先每项最坏挂 300 秒、四项串行，最坏 20 分钟，这就是「配置 API 时检测太慢」。
+# 现在四项并发 + 45 秒封顶，整轮最坏 ≈ 模型发现 10 秒 + 45 秒。
+#
+# **这 45 秒是并发首发与串行重试共用的，不从中切一块留给重试**：切了会让本来就慢的
+# 供应商从「通过」变成「超时」——阿里 qwen3.8-flash 关思考后做文本探测实测 34.9 秒，
+# 把首发砍到 30 秒就正好裁掉它（这是改动中真实踩过的坑）。而需要重试的限流/繁忙
+# 都是**快速失败**，首发根本花不了几秒，预算天然留着。
+_PROBE_TIMEOUT_SECONDS = 45.0
+
+# 并发首发下「不能直接当结论」的错误码 —— 必须串行重试一次再下定论。
+#
+# 只收**快速失败**的两种（限流/繁忙，其定义与生成链路的限速器共用同一常量）：
+# 它们都是对端立刻回绝，重试几乎不花预算，而并发本身就是限流的诱因，
+# 所以必须给它们一次平反机会。
+#
+# **刻意不含 `E_API_TIMEOUT`**：超时意味着这次调用已经烧掉了几十秒，重试只会再烧一遍，
+# 而实测表明这种慢是供应商固有的、不是并发造成的（阿里 qwen3.8-flash 做文本单发 73 秒、
+# 并发 77~87 秒，只差约 10%）。把它当可重试会白等一轮，且掩盖真实结论。
+_RETRYABLE_PROBE_ERROR_CODES = THROTTLE_ERROR_CODES
+_RETRY_BACKOFF_SECONDS = 2.0
+# 串行重试至少要有这么多剩余预算；否则重试只会把检测拖到上限，还不如如实报限流。
+_RETRY_MIN_REMAINING_SECONDS = 8.0
 
 _PROBE_TEXT = (
     "测试候选人\n"
     "技能：Python、SQL\n"
     "工作经历：软件工程师，负责业务系统开发与维护，5 年工作经验。\n"
-    "教育经历：计算机科学与技术，本科。"
+    "教育经历：计算机科学与技术，本科。\n"
+    "请只用一句话说明你收到了这份资料，不要展开、不要分析。"
+)
+
+# JSON 能力探测载荷提示词。要的是「能回业务同形的 JSON」，不是「能回 JSON」。
+_PROBE_JSON_PROMPT = (
+    "只输出一个 JSON 对象，不要 markdown 代码块，不要任何多余文字。格式：\n"
+    '{"name": "张三", "skills": ["Python", "SQL"], "total_years": 5}'
 )
 
 
 class _ProbeJson(BaseModel):
-    ok: bool
+    """JSON 能力探测的最小业务同形对象。
+
+    原先只要求模型回 ``{"ok": true}``：能回这个不代表能回简历/JD 那种大 schema，
+    于是出现「检测显示可用、真实解析一直失败」的错位。这里改成与真实解析同形的小对象
+    （一个必填标量 + 一个数组 + 一个可空数值），把「能回 JSON」与「能回业务 JSON」对齐。
+    """
+
+    name: str
+    skills: list[str] = []
+    total_years: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,27 +304,92 @@ class AiProbeService:
             provider_id=connection.provider_id,
         )
 
-        first_request: CapabilityProbe | None = None
+        # 三项能力互不依赖（json 需要 text 成功，串在 text 之后），并发发起：
+        # 串行时最坏 4×300 秒，是「检测时间太长」的直接原因。
+        # 共享同一个 deadline：并发意味着总耗时约等于其中最慢的一项，而不是各项之和。
+        deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
 
-        # fast_text：文本与 JSON 两项都必须通过。
-        if fast_model:
-            text = await self._probe_capability(adapter, fast_model, fast_profile, _text_request(), response_model=None)
-            first_request = text
+        text_task = (
+            asyncio.create_task(
+                self._probe_capability(
+                    adapter, fast_model, fast_profile, _text_request(), response_model=None, deadline=deadline
+                )
+            )
+            if fast_model
+            else None
+        )
+        reasoning_task = (
+            asyncio.create_task(
+                self._probe_capability(
+                    adapter, reasoning_model, reasoning_profile, _reasoning_request(), response_model=None, deadline=deadline
+                )
+            )
+            if reasoning_model
+            else None
+        )
+        vision_task = (
+            asyncio.create_task(
+                self._probe_capability(
+                    adapter, vision_model, vision_profile, _vision_request(), response_model=None, deadline=deadline
+                )
+            )
+            if vision_model
+            else None
+        )
+
+        # fast_text：文本与 JSON 两项都必须通过；json 依赖 text 成功，故串行。
+        if text_task is not None:
+            text = await text_task
             if text.ok:
-                json_probe = await self._probe_capability(adapter, fast_model, fast_profile, _json_request(), response_model=_ProbeJson)
+                json_probe = await self._probe_capability(
+                    adapter, fast_model, fast_profile, _json_request(), response_model=_ProbeJson, deadline=deadline
+                )
 
-        # 思考探测：独立进行，不因 fast_text 缺失或失败而跳过。
-        if reasoning_model:
-            reasoning = await self._probe_capability(adapter, reasoning_model, reasoning_profile, _reasoning_request(), response_model=None)
-            if first_request is None:
-                first_request = reasoning
+        if reasoning_task is not None:
+            reasoning = await reasoning_task
 
-        # 视觉探测：独立进行。
-        if vision_model:
-            vision = await self._probe_capability(adapter, vision_model, vision_profile, _vision_request(), response_model=None)
-            if first_request is None:
-                first_request = vision
+        if vision_task is not None:
+            vision = await vision_task
 
+        # 并发只用来省时间，**不能拿并发结果当结论**：低 RPM 的供应商（实测 Kimi 开放平台）
+        # 会在并发下直接回 429，把 reasoning / vision 判成「不可用」，而紧接着的真实解析
+        # 5/5 全部成功（含 2 份 PDF）——矩阵与真实结果自相矛盾，正是问题 #8 那一类误导。
+        # 所以限流类失败必须**串行重试一次**再下定论。
+        probes = {"text": text, "reasoning": reasoning, "vision": vision}
+        specs = {
+            "text": (fast_model, fast_profile, _text_request()),
+            "reasoning": (reasoning_model, reasoning_profile, _reasoning_request()),
+            "vision": (vision_model, vision_profile, _vision_request()),
+        }
+        for name, (model_id, model_profile, request) in specs.items():
+            current = probes[name]
+            if model_id is None or current.error_code not in _RETRYABLE_PROBE_ERROR_CODES:
+                continue
+            if deadline - time.monotonic() < _RETRY_MIN_REMAINING_SECONDS:
+                logger.warning("检测遇限流但剩余预算不足，不再串行重试：%s", name)
+                continue
+            await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
+            retried = await self._probe_capability(
+                adapter, model_id, model_profile, request, response_model=None, deadline=deadline
+            )
+            if retried.ok:
+                logger.info("并发探测遇限流，串行重试后通过：%s", name)
+                probes[name] = retried
+        text, reasoning, vision = probes["text"], probes["reasoning"], probes["vision"]
+        # 文本是 JSON 探测的前置：文本这一项是**重试后**才通过的，说明当初根本没轮到 JSON 探测。
+        # 这里补上，否则矩阵会显示 json=false，又是一个「矩阵与真实不一致」。
+        if text.ok and not json_probe.ok and json_probe.error_code is None:
+            json_probe = await self._probe_capability(
+                adapter, fast_model, fast_profile, _json_request(), response_model=_ProbeJson, deadline=deadline
+            )
+
+        # auth 取「实际跑过的第一个能力」的结果，且必须用**重试后**的值：
+        # 用重试前的旧值会把「限流→串行重试成功」判成鉴权失败。
+        first_request = (
+            probes["text"] if text_task is not None
+            else probes["reasoning"] if reasoning_task is not None
+            else probes["vision"]
+        )
         if first_request is not None and not first_request.ok:
             auth = self._classify(connection, first_request)
 
@@ -289,6 +403,7 @@ class AiProbeService:
         request: GenerationRequest,
         *,
         response_model: type[BaseModel] | None,
+        deadline: float,
     ) -> CapabilityProbe:
         req = GenerationRequest(
             messages=request.messages,
@@ -298,6 +413,8 @@ class AiProbeService:
             output_mode=OutputMode.JSON if response_model is not None else OutputMode.TEXT,
             reasoning=request.reasoning,
             response_model=response_model,
+            # 探测封顶：不传 deadline 时适配器会按业务调用的 300 秒算，一项就够拖垮整轮检测。
+            deadline_monotonic=deadline,
         )
         try:
             await adapter.generate(req, model=model, profile=profile)
@@ -345,7 +462,7 @@ def _text_request() -> GenerationRequest:
 
 def _json_request() -> GenerationRequest:
     return GenerationRequest(
-        messages=[{"role": "user", "content": '只回复 JSON，格式 {"ok": true}'}],
+        messages=[{"role": "user", "content": _PROBE_JSON_PROMPT}],
         role=ModelRole.FAST_TEXT,
         task_kind=TaskKind.RESUME_PARSE,
         execution_context=ExecutionContext.INTERACTIVE,

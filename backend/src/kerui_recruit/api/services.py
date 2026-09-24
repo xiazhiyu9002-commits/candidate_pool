@@ -27,6 +27,7 @@ from kerui_recruit.org.binding import OrgBindingService
 from kerui_recruit.org.import_parser import OrgImportParser
 from kerui_recruit.org.service import OrgService
 from kerui_recruit.providers.connectivity import ProviderConnectivityService
+from kerui_recruit.reminders.candidate_service import CandidateReminderService
 from kerui_recruit.reminders.service import ReminderService
 from kerui_recruit.scheduler.service import SchedulerService
 from kerui_recruit.search.review import SearchReviewService
@@ -45,6 +46,8 @@ class AppServices:
     blob_store: BlobStore
     task_repository: TaskRepository
     search_service: HybridSearchService
+    # 查询文本的 LLM 结构化解析（默认关闭，见 search/parse.py）；未配置时解析开关不生效。
+    query_parser: object | None = None
     match_service: MatchService | None = None
     jd_pipeline: JdPipeline | None = None
     export_service: ExportService | None = None
@@ -54,6 +57,7 @@ class AppServices:
     diagnostics_service: DiagnosticsService | None = None
     mapping_service: MappingService | None = None
     reminder_service: ReminderService | None = None
+    candidate_reminder_service: CandidateReminderService | None = None
     org_service: OrgService | None = None
     org_import_parser: OrgImportParser | None = None
     org_binding_service: OrgBindingService | None = None

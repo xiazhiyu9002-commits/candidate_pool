@@ -152,6 +152,23 @@ test("在空白画布按住拖动可平移视图", () => {
 });
 
 
+test("节点名称与副标题共用一个纵向容器，不会各拿一半宽度被截断", () => {
+  // 回归守卫：原先 CSS 写的是 `.org-node > span { flex: 1 }`，它同时命中名称与副标题两个 span，
+  // 在横向 flex 容器里各拿一半宽度，于是双双被 `text-overflow: ellipsis` 截断
+  // ——而节点宽度是按 max(名称宽, 副标题宽) 算出来的，等于白算，表现为「每个节点文字显示不全」。
+  render(<MappingPage {...makeProps()} />);
+
+  const name = screen.getByText("技术部");
+  const sub = screen.getByText("10 人");
+  expect(name).toHaveClass("org-node-name");
+  // 同一个父容器 = 同一列纵向排列；分成两个并列子节点就会各自挤压。
+  expect(name.parentElement).not.toBeNull();
+  expect(name.parentElement).toBe(sub.parentElement);
+  expect(name.parentElement).toHaveClass("org-node-text");
+  expect(name.parentElement?.parentElement).toHaveClass("org-node");
+});
+
+
 test("在节点上按下不会触发平移", () => {
   const { container } = render(<MappingPage {...makeProps()} />);
   const canvas = container.querySelector(".org-mindmap") as HTMLElement;

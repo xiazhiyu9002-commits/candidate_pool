@@ -15,6 +15,7 @@ from kerui_recruit.providers.ai.contracts import (
     GenerationRequest,
     ModelRole,
     OutputMode,
+    ReasoningEffort,
     ReasoningMode,
     TaskKind,
 )
@@ -31,12 +32,18 @@ class TaskGenerationClient:
         role: ModelRole,
         execution_context: ExecutionContext,
         reasoning: ReasoningMode = ReasoningMode.OFF,
+        reasoning_effort: ReasoningEffort | None = None,
+        prefer_off: bool = False,
     ) -> None:
         self._gateway = gateway
         self.task_kind = task_kind
         self.role = role
         self.execution_context = execution_context
         self.reasoning = reasoning
+        # 本任务的显式思考强度；None 表示交给 AI 设置里按槽位配置的档位。
+        self.reasoning_effort = reasoning_effort
+        # 「宁可关思考」：槽位配的强度不参与，能关思考的模型一律关掉（最快）。见 `contracts.GenerationRequest`。
+        self.prefer_off = prefer_off
 
     @property
     def cache_identity(self) -> str:
@@ -60,6 +67,8 @@ class TaskGenerationClient:
             execution_context=execution_context or self.execution_context,
             output_mode=OutputMode.JSON,
             reasoning=reasoning or self.reasoning,
+            reasoning_effort=self.reasoning_effort,
+            prefer_off=self.prefer_off,
             response_model=response_model,
             temperature=temperature,
             deadline_monotonic=deadline_monotonic,
@@ -76,6 +85,7 @@ class TaskGenerationClient:
         *,
         execution_context: ExecutionContext | None = None,
         deadline_monotonic: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         request = GenerationRequest(
             messages=messages,
@@ -84,8 +94,11 @@ class TaskGenerationClient:
             execution_context=execution_context or self.execution_context,
             output_mode=OutputMode.TEXT,
             reasoning=self.reasoning,
+            reasoning_effort=self.reasoning_effort,
+            prefer_off=self.prefer_off,
             temperature=temperature,
             deadline_monotonic=deadline_monotonic,
+            max_tokens=max_tokens,
         )
         result = await self._gateway.generate(request)
         return result.text

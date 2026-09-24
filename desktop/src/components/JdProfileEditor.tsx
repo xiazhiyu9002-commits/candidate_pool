@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import type { ProfileGenerationProgress } from "../api/client";
+
 export interface JdExactConstraint {
   kind: string;
   operator: string;
@@ -9,14 +11,32 @@ export interface JdExactConstraint {
   source_text: string;
 }
 
+/** 画像文本解析出的要求：硬条件 + 年限。
+ * yearsStated 区分「画像没提年限」（保留既有 min_years）与「画像明确不限」（清空窗口）。 */
+export interface JdProfileRequirements {
+  constraints: JdExactConstraint[];
+  minYears: number | null;
+  yearsStated: boolean;
+}
+
+/** 画像保存时要回传的年限：未提年限时 yearsStated 为 false，后端保留原值。 */
+export interface JdProfileYears {
+  minYears: number | null;
+  yearsStated: boolean;
+}
+
 interface JdProfileEditorProps {
   jdId: string;
   title: string;
   profile: string | null;
   constraints: JdExactConstraint[];
-  onSave: (jdId: string, profile: string, constraints: JdExactConstraint[]) => Promise<void>;
-  onRegenerate: (jdId: string, instruction: string) => Promise<string | null>;
-  onParseConstraints: (sourceText: string) => Promise<JdExactConstraint[]>;
+  onSave: (jdId: string, profile: string, constraints: JdExactConstraint[], years: JdProfileYears) => Promise<void>;
+  onRegenerate: (
+    jdId: string,
+    instruction: string,
+    onStage?: (progress: ProfileGenerationProgress) => void,
+  ) => Promise<string | null>;
+  onParseConstraints: (sourceText: string) => Promise<JdProfileRequirements>;
   onClose: () => void;
 }
 
@@ -35,6 +55,8 @@ export function JdProfileEditor({
   const [constraints, setConstraints] = useState<JdExactConstraint[]>(initialConstraints);
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  /** 生成阶段的服务端文案（最坏要等 150 秒，光有转圈看不出「还会不会再来一次调用」）。 */
+  const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** 画像正文被改过：保存时会按新文字重解析硬条件，因此旧草稿不再展示、也不参与保存。 */
   const draftChanged = draft.trim() !== (profile ?? "").trim();
@@ -42,12 +64,15 @@ export function JdProfileEditor({
   async function save() {
     if (saving || regenerating) return;
     setError(null);
-    // 画像一变就按最新文字重解析硬条件并覆盖（完全交给 AI）；文本没变则沿用现有硬条件，
-    // 不做二次确认——保存与重解析在同一次点击里完成。
+    // 画像一变就按最新文字重解析硬条件与年限并覆盖（完全交给模型，年限另有正则兜底）；
+    // 文本没变则沿用现有硬条件，年限也不动（后端会保留原值）。
     setSaving(true);
     try {
-      const next = draftChanged ? await onParseConstraints(draft) : constraints;
-      await onSave(jdId, draft.trim() || "", next);
+      const next: JdProfileRequirements = draftChanged
+        ? await onParseConstraints(draft)
+        : { constraints, minYears: null, yearsStated: false };
+      await onSave(jdId, draft.trim() || "", next.constraints,
+        { minYears: next.minYears, yearsStated: next.yearsStated });
       onClose();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "画像保存失败");
@@ -58,15 +83,17 @@ export function JdProfileEditor({
   async function regenerate() {
     if (saving || regenerating) return;
     setRegenerating(true);
+    setStage(null);
     setError(null);
     try {
-      const profile = await onRegenerate(jdId, instruction);
+      const profile = await onRegenerate(jdId, instruction, (progress) => setStage(progress.message));
       if (profile != null) setDraft(profile);
       setInstruction("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "画像重新生成失败");
     } finally {
       setRegenerating(false);
+      setStage(null);
     }
   }
 
@@ -123,8 +150,9 @@ export function JdProfileEditor({
           </div>
         )}
         {error && <p role="alert" className="profile-editor__error">{error}</p>}
+        {regenerating && stage && <p role="status" className="profile-editor__hint">{stage}</p>}
         {draftChanged && !error && (
-          <p className="profile-editor__hint">画像已修改：保存时会按新文字重新解析硬条件并覆盖</p>
+          <p className="profile-editor__hint">画像已修改：保存时会按新文字重新解析硬条件与年限并覆盖</p>
         )}
         <div className="profile-editor__actions">
           <button type="button" className="btn btn-ghost btn-xs" disabled={saving || regenerating} onClick={() => void regenerate()}>

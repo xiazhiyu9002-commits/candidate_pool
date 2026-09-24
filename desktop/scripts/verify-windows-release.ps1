@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallerPath,
@@ -66,25 +66,50 @@ function Invoke-IsolatedInstallCycle([IO.FileInfo]$Current, [IO.FileInfo]$Previo
     }
     Invoke-SilentInstaller $Current $installRoot
 
-    $application = Join-Path $installRoot 'kerui-recruit-desktop.exe'
-    if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
+    # 应用主程序名跟着 `productName` 走（当前是 `recruit`，安装包名 `recruit_<版本>_x64-setup.exe`），
+    # 而这里原来写死了旧名 `kerui-recruit-desktop.exe` —— 改名后冒烟会误报「找不到可执行文件」。
+    # 先按候选名找，找不到就在安装根目录里挑体积最大的非卸载器 exe（壳层只有一个主程序）。
+    $candidates = @('kerui-recruit-desktop.exe', 'recruit.exe')
+    $application = $null
+    foreach ($name in $candidates) {
+        $candidatePath = Join-Path $installRoot $name
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            $application = $candidatePath
+            break
+        }
+    }
+    if (-not $application) {
+        $application = Get-ChildItem -LiteralPath $installRoot -Filter *.exe -File |
+            Where-Object { $_.Name -ne 'uninstall.exe' } |
+            Sort-Object Length -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $application) {
         throw "Installed application executable was not found"
     }
 
     $process = Start-IsolatedApplication $application $localData $roamingData
+    # **Windows 是便携式布局**：数据跟着安装目录走，落在 `<exe 目录>\data`
+    # （见 `src-tauri/src/lib.rs:default_data_root`），不是 `%LOCALAPPDATA%\KeRuiRecruit`
+    # ——后者只是旧版的迁移来源（`legacy_data_root`），只会造成「找不到数据库」的误报。
+    $dataRoot = Join-Path $installRoot 'data'
     try {
-        $database = Join-Path $localData 'KeRuiRecruit\db\recruit.sqlite3'
+        $database = Join-Path $dataRoot 'db\recruit.sqlite3'
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not (Test-Path -LiteralPath $database) -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 250
         }
         if (-not (Test-Path -LiteralPath $database)) {
-            throw "Application did not initialize its isolated database"
+            throw "Application did not initialize its portable database at $database"
         }
     }
     finally {
         if ($process -and -not $process.HasExited) {
-            $process.Kill($true)
+            # `Process.Kill($true)`（连子进程树一起杀）只在 .NET Core / PowerShell 7+ 存在，
+            # Windows PowerShell 5.1 上会直接报 "Cannot find an overload for Kill and the
+            # argument count: 1"。而 sidecar 是壳层的子进程，只杀壳层会留下孤儿服务——
+            # 所以改用两种宿主都能用的 `taskkill /T`（与 Rust 侧 terminate_sidecar 同一口径）。
+            & taskkill /T /F /PID $process.Id 2>$null | Out-Null
             $process.WaitForExit()
         }
     }
@@ -97,8 +122,12 @@ function Invoke-IsolatedInstallCycle([IO.FileInfo]$Current, [IO.FileInfo]$Previo
     if ($uninstall.ExitCode -ne 0) {
         throw "Uninstaller exited with code $($uninstall.ExitCode)"
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $localData 'KeRuiRecruit') -PathType Container)) {
-        throw "Uninstall removed the isolated user data directory"
+    # 卸载不得删用户数据。便携式布局下数据就在安装目录内，所以要**实测**它是否还在——
+    # 这正是「NSIS 卸载会不会连 `data` 一起删掉」这个问题的答案，不能靠假设。
+    $survived = (Test-Path -LiteralPath (Join-Path $dataRoot 'db\recruit.sqlite3') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $localData 'KeRuiRecruit') -PathType Container)
+    if (-not $survived) {
+        throw "Uninstall removed the user data directory (checked $dataRoot and the legacy LOCALAPPDATA root)"
     }
 
     return [ordered]@{
@@ -106,6 +135,7 @@ function Invoke-IsolatedInstallCycle([IO.FileInfo]$Current, [IO.FileInfo]$Previo
         upgraded_from_previous = [bool]$Previous
         launch_initialized_database = $true
         uninstall_retained_data = $true
+        data_root = $dataRoot
         isolated_test_root = $testRoot
     }
 }

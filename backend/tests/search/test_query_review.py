@@ -58,9 +58,11 @@ class _SkillClient:
         self.prompts.append(prompt)
         if "Java" in prompt:
             return ReviewVerdictModel(
-                verdict="recommend", reasons=["支付经验匹配（projects[0]）"], cautions=["未见管理经验"]
+                verdict="recommend",
+                project_match=["支付经验匹配（projects[0]）"],
+                risks=["未见管理经验（experiences[0]）"],
             )
-        return ReviewVerdictModel(verdict="reject", reasons=[], cautions=["技能不符（skills）"])
+        return ReviewVerdictModel(verdict="reject", risks=["技能不符（skills）"])
 
 
 def test_query_fingerprint_is_stable_and_ignores_empty_filters():
@@ -71,14 +73,26 @@ def test_query_fingerprint_is_stable_and_ignores_empty_filters():
     assert query_fingerprint("java", {"min_years": 3}) != query_fingerprint("java", {"min_years": 5})
 
 
-def test_describe_conditions_renders_readable_labels():
-    text = describe_conditions("java 后端", {"min_years": 3, "locations": ["上海"], "candidate_status": "AVAILABLE"})
+def test_describe_conditions_keeps_soft_fields_and_drops_hard_filters():
+    """硬条件已在筛选阶段生效，复核阶段再给模型只会引入噪声。"""
+    text = describe_conditions(
+        "java 后端",
+        {"min_years": 3, "locations": ["上海"], "candidate_status": "AVAILABLE",
+         "business_directions": ["支付"], "company": ["某支付公司"]},
+    )
 
     assert "关键词：java 后端" in text
-    assert "最低工作年限：3" in text
-    assert "现居城市：上海" in text
-    # 默认的候选人状态不算「条件」，不该出现在提示词里。
+    assert "软性要求：" in text
+    assert "业务方向：支付" in text
+    assert "公司：某支付公司" in text
+    # 默认的候选人状态不算「条件」，硬条件也不该出现在提示词里。
     assert "AVAILABLE" not in text
+    assert "最低工作年限" not in text
+    assert "现居城市" not in text
+
+
+def test_describe_conditions_handles_empty_query():
+    assert describe_conditions("", {}) == "（招聘方没有给出明确条件，属于泛检索）"
 
 
 def test_review_base_key_depends_on_the_selection():
@@ -101,12 +115,37 @@ async def test_review_query_persists_highlights_and_risks(factory):
     rows = _rows(factory)
     assert rows["cand-1"].verdict == "recommend"
     assert rows["cand-1"].highlights == ["支付经验匹配（projects[0]）"]
-    assert rows["cand-1"].risks == ["未见管理经验"]
+    assert rows["cand-1"].risks == ["未见管理经验（experiences[0]）"]
     assert rows["cand-1"].failed is False
+    assert rows["cand-1"].basis["source"] == "search"
     assert rows["cand-2"].verdict == "reject"
     assert rows["cand-2"].risks == ["技能不符（skills）"]
     # 提示词里必须带上搜索条件，亮点/风险点才有依据。
     assert all("关键词：java 后端" in prompt for prompt in client.prompts)
+
+
+@pytest.mark.asyncio
+async def test_review_query_merges_three_sections_in_reading_order(factory):
+    """亮点列按「项目 → 工作经历 → 技术栈」拼接，读起来与判定顺序一致。"""
+    _seed_candidates(factory, {"cand-1": {"skills": ["Java"]}})
+
+    class _ThreeSectionClient:
+        async def complete_json(self, messages, model, reasoning=None):
+            return ReviewVerdictModel(
+                verdict="recommend",
+                project_match=["项目点（projects[0]）"],
+                experience_match=["经历点（experiences[0]）"],
+                tech_match=["技术点（skills）"],
+                risks=["风险点（experiences[0]）"],
+            )
+
+    await SearchReviewService(
+        session_factory=factory, task_client=_ThreeSectionClient()
+    ).review_query(query_key="qk", conditions="条件", candidate_ids=["cand-1"])
+
+    row = _rows(factory)["cand-1"]
+    assert row.highlights == ["项目点（projects[0]）", "经历点（experiences[0]）", "技术点（skills）"]
+    assert row.risks == ["风险点（experiences[0]）"]
 
 
 @pytest.mark.asyncio
@@ -116,7 +155,7 @@ async def test_review_query_overwrites_previous_verdict(factory):
 
     class _SecondClient:
         async def complete_json(self, messages, model, reasoning=None):
-            return ReviewVerdictModel(verdict="pending", reasons=["这一轮改判"], cautions=[])
+            return ReviewVerdictModel(verdict="pending", project_match=["这一轮改判"])
 
     await SearchReviewService(session_factory=factory, task_client=_SkillClient()).review_query(
         query_key="qk-1", conditions="条件", candidate_ids=["cand-1"]

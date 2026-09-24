@@ -20,7 +20,7 @@ from kerui_recruit.db.models import (
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.resumes.deletion import CandidateDeletionService
 from kerui_recruit.storage.blobs import BlobStore
-from kerui_recruit.tasks.repository import TaskRepository
+from kerui_recruit.tasks.repository import TaskRepository, TaskSpec
 
 
 def _factory(database: Path) -> sessionmaker[Session]:
@@ -128,3 +128,49 @@ def test_delete_enqueues_retryable_cleanup_task(tmp_path: Path) -> None:
         assert task.task_type == "BLOB_CLEANUP"
         assert task.payload["candidate_id"] == candidate_id
         assert task.payload["storage_paths"] == [storage_path]
+
+
+def test_delete_cancels_pending_tasks_of_the_deleted_candidate(tmp_path: Path) -> None:
+    """删除候选人要一并取消引用它的未终态任务，别让它们空转到死信。
+
+    实测 `.dev-data` 128 条 DEAD_LETTER 里 **56 条**是「Resume revision not found」——
+    候选人删了、队列里的 PARSE_RESUME 还会被领到、按 max_attempts 重试满 5 次才进死信。
+    这既污染死信指标（原先据此误判成「解析质量差」），也白占 worker。
+    """
+    factory = _factory(tmp_path / "recruit.sqlite3")
+    with factory() as session:
+        blob = Blob(content_sha256="d" * 64, suffix=".pdf", size_bytes=6,
+                    storage_path="dd/dd/" + "d" * 64 + ".pdf", reference_count=1)
+        candidate = Candidate(display_name="张三")
+        document = ResumeDocument(candidate=candidate)
+        revision = ResumeRevision(document=document, blob=blob, content_sha256=blob.content_sha256,
+                                  original_filename="张三.pdf", status="READY")
+        other_blob = Blob(content_sha256="e" * 64, suffix=".pdf", size_bytes=6,
+                          storage_path="ee/ee/" + "e" * 64 + ".pdf", reference_count=1)
+        other = Candidate(display_name="李四")
+        other_document = ResumeDocument(candidate=other)
+        other_revision = ResumeRevision(document=other_document, blob=other_blob,
+                                        content_sha256=other_blob.content_sha256,
+                                        original_filename="李四.pdf", status="READY")
+        session.add_all([candidate, blob, document, revision,
+                         other, other_blob, other_document, other_revision])
+        session.commit()
+        candidate_id, revision_id = candidate.id, revision.id
+        other_revision_id = other_revision.id
+
+    repo = TaskRepository(factory)
+    mine = repo.enqueue(TaskSpec("PARSE_RESUME", "normal", 10,
+                                 {"revision_id": revision_id}, "parse:mine"))
+    # 嵌套在 list 里的载荷也要能匹配上（不同任务类型的载荷结构不同）。
+    mine_nested = repo.enqueue(TaskSpec("REPARSE", "normal", 10,
+                                        {"ids": [candidate_id]}, "reparse:mine"))
+    theirs = repo.enqueue(TaskSpec("PARSE_RESUME", "normal", 10,
+                                   {"revision_id": other_revision_id}, "parse:theirs"))
+
+    CandidateDeletionService(factory).delete(candidate_id)
+
+    with factory() as session:
+        assert session.get(TaskRecord, mine).status == "CANCELLED"
+        assert session.get(TaskRecord, mine_nested).status == "CANCELLED"
+        # 别的候选人的任务不能受影响。
+        assert session.get(TaskRecord, theirs).status == "QUEUED"

@@ -6,7 +6,7 @@ Run from the repository root:
 
 ```powershell
 pwsh -File desktop/scripts/verify-windows-release.ps1 `
-  -InstallerPath desktop/src-tauri/target/release/bundle/nsis/kerui-recruit-desktop_0.1.0_x64-setup.exe `
+  -InstallerPath desktop/src-tauri/target/release/bundle/nsis/recruit_0.1.0_x64-setup.exe `
   -EvidencePath docs/verification/windows-installer-evidence.json
 ```
 

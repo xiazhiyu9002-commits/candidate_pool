@@ -66,6 +66,27 @@ describe("AdvancedAiSettings", () => {
     expect(screen.getByRole("button", { name: "保存高级设置" })).toBeVisible();
   });
 
+  test("reordering decides which two connections are primary and backup", async () => {
+    const user = userEvent.setup();
+    const second = { ...singleConnection(), connection_id: "conn-2", provider_id: "qwen" as const, display_name: "通义千问" };
+    render(
+      <AdvancedAiSettings
+        api={api}
+        catalog={catalog}
+        config={config([singleConnection(), second])}
+        onSave={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("DeepSeek（主）")).toBeVisible();
+    expect(screen.getByText("通义千问（备）")).toBeVisible();
+    const moveUp = screen.getAllByRole("button", { name: "上移" });
+    expect(moveUp[0]).toBeDisabled();
+    await user.click(moveUp[1]);
+    expect(screen.getByText("通义千问（主）")).toBeVisible();
+    expect(screen.getByText("DeepSeek（备）")).toBeVisible();
+  });
+
   test("provides a change API key entry without deleting the connection", async () => {
     const user = userEvent.setup();
     render(

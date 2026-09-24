@@ -61,8 +61,12 @@ class FakeSynthesizer:
         )
 
 
-@pytest.fixture
-def client(tmp_path: Path):
+class BoomSynthesizer:
+    async def synthesize(self, query, chunks):
+        raise RuntimeError("boom")
+
+
+def _build_client(tmp_path: Path, synthesizer):
     engine = create_engine_for(tmp_path / "recruit.sqlite3")
     migrate(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -74,7 +78,7 @@ def client(tmp_path: Path):
         encryption=encryption,
         planner=FakePlanner(),
         evidence_extractor=EvidenceExtractor(),
-        synthesizer=FakeSynthesizer(),
+        synthesizer=synthesizer,
     )
     settings = Settings(data_root=tmp_path / "data", session_token=SecretStr("token"))
     services = AppServices(
@@ -86,7 +90,12 @@ def client(tmp_path: Path):
         bd_agent=agent,
         encryption_service=encryption,
     )
-    app = create_app(services)
+    return create_app(services)
+
+
+@pytest.fixture
+def client(tmp_path: Path):
+    app = _build_client(tmp_path, FakeSynthesizer())
     with TestClient(app) as test_client:
         yield test_client
 
@@ -105,10 +114,40 @@ def test_agent_query_returns_cited_leads(client: TestClient) -> None:
     body = resp.json()
     assert body["session_id"]
     assert len(body["leads"]) == 1
+    assert body["degraded_reason"] is None
     lead = body["leads"][0]
     assert lead["company_name"] == "A公司"
     assert lead["is_hiring"] is True
     assert lead["evidence"][0]["source_url"] == "https://a.com/job"
+
+
+def test_agent_query_surfaces_degraded_reason(tmp_path: Path) -> None:
+    """综合失败时接口必须回 degraded_reason，前端才能把失败与「没搜到」分开显示。"""
+    app = _build_client(tmp_path, BoomSynthesizer())
+    with TestClient(app) as test_client:
+        resp = test_client.post(
+            "/api/bd/agent/query",
+            json={"query": "找大模型公司", "kind": "text"},
+            headers=_headers(),
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["leads"] == []
+    assert body["degraded_reason"]
+    assert "RuntimeError" in body["degraded_reason"]
+
+
+def test_agent_stream_surfaces_degraded_reason(tmp_path: Path) -> None:
+    app = _build_client(tmp_path, BoomSynthesizer())
+    with TestClient(app) as test_client:
+        resp = test_client.post(
+            "/api/bd/agent/query-stream",
+            json={"query": "找大模型公司"},
+            headers=_headers(),
+        )
+    assert resp.status_code == 200
+    assert "event: result" in resp.text
+    assert "degraded_reason" in resp.text
 
 
 def test_agent_follow_up_reuses_session(client: TestClient) -> None:

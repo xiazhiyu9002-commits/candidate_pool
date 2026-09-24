@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -13,7 +14,8 @@ from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Blob, Candidate, Jd, JdRevision, ResumeDocument, ResumeRevision
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.encryption.service import EncryptionService
-from kerui_recruit.jd.profile import JdProfileGenerator
+from kerui_recruit.jd.profile import JdPointsPlan, JdProfileGenerator
+from kerui_recruit.jd.structured import ExactConstraint
 from kerui_recruit.providers.ai.catalog import CatalogService
 from kerui_recruit.providers.ai.circuit_breaker import CircuitBreaker
 from kerui_recruit.providers.ai.config_models import AiConnection, AiProviderConfig
@@ -21,6 +23,7 @@ from kerui_recruit.providers.ai.config_store import AiConfigStore
 from kerui_recruit.providers.ai.contracts import ExecutionContext, ModelRole, TaskKind
 from kerui_recruit.providers.ai.manager import AiProviderManager
 from kerui_recruit.providers.ai.probes import AiProbeService
+from kerui_recruit.providers import profile_spec
 from kerui_recruit.providers.profile_pair import ProfileFact, ProfilePair, ProfilePoint
 from kerui_recruit.resumes.profile import CandidateProfileGenerator
 from kerui_recruit.schools.backfill import backfill_school_mappings
@@ -77,6 +80,16 @@ def _consistent_pair() -> ProfilePair:
         points=[ProfilePoint(text="负责交易系统后端研发", evidence_paths=["projects[0].summary"])],
         compact="后端研发",
     )
+
+
+@pytest.fixture(autouse=True)
+def _skip_profile_vet(monkeypatch):
+    """本文件只验证回填链路（写哪些字段、调用次数、退化路径），不验证画像口径。
+
+    口径校验与定点重写的契约由 ``tests/providers/test_profile_pair_contract.py`` 覆盖；
+    这里放行，避免测试用的短样本文本触发一次额外的定点修正调用，干扰调用次数断言。
+    """
+    monkeypatch.setattr(profile_spec, "vet_profile", lambda text, *, side: ())
 
 
 @pytest.fixture
@@ -412,8 +425,8 @@ async def test_regenerate_candidate_profile_falls_back_when_structured_fails(fac
 
 @pytest.mark.asyncio
 async def test_regenerate_jd_profile_returns_structured_dual_form(factory) -> None:
-    """JD 重新生成同样走结构化链路，返回真双形态预览。"""
-    llm = StructuredLLM(_consistent_pair())
+    """JD 重新生成走要点链路：模型只给要点，整段/分点/浓缩由要点本地派生。"""
+    llm = StructuredLLM(JdPointsPlan(points=[ProfilePoint(text="负责交易系统后端研发")]))
     service = BackfillService(factory, jd_generator=JdProfileGenerator(llm))
     with factory() as session, session.begin():
         jd = Jd(title="后端工程师", company="Example", status="OPEN")
@@ -428,26 +441,20 @@ async def test_regenerate_jd_profile_returns_structured_dual_form(factory) -> No
 
     assert result["summary"] == "负责交易系统后端研发"
     assert [p["text"] for p in result["points"]] == ["负责交易系统后端研发"]
-    assert result["compact"] == "后端研发"
+    assert result["compact"] == "负责交易系统后端研发"  # 由首个要点派生
     assert llm.calls == 0
 
 
 @pytest.mark.asyncio
 async def test_regenerate_jd_profile_returns_constraints_from_the_same_call(factory) -> None:
     """硬条件与画像同一次调用产出（零额外调用）；退化路径不返回该字段，前端保留既有约束。"""
-    from kerui_recruit.jd.profile import JdProfilePair
-
-    pair = JdProfilePair(
-        facts=[ProfileFact(text="交易系统", evidence_paths=["projects[0].summary"])],
-        narrative="负责交易系统后端研发",
-        points=[ProfilePoint(text="负责交易系统后端研发", evidence_paths=["projects[0].summary"])],
-        compact="后端研发",
-        exact_constraints=[{
-            "kind": "skill", "operator": "OR", "alternatives": ["Java"],
-            "strength": "MUST", "source": "inferred", "source_text": "必须熟悉 Java",
-        }],
+    plan = JdPointsPlan(
+        points=[ProfilePoint(text="负责交易系统后端研发", evidence_paths=["core_duties[0]"])],
+        exact_constraints=[ExactConstraint(
+            kind="skill", operator="OR", alternatives=["Java"],
+            strength="MUST", source="inferred", source_text="必须熟悉 Java")],
     )
-    llm = StructuredLLM(pair)
+    llm = StructuredLLM(plan)
     service = BackfillService(factory, jd_generator=JdProfileGenerator(llm))
     with factory() as session, session.begin():
         jd = Jd(title="后端工程师", company="Example", status="OPEN")
@@ -459,9 +466,10 @@ async def test_regenerate_jd_profile_returns_constraints_from_the_same_call(fact
         jd_id = jd.id
 
     result = await service.regenerate_jd_profile(jd_id)
+    # 技能类的 MUST 在落库前已降级为 PLUS（不具备淘汰力，只按命中率参与排序）。
     assert result["constraints"] == [{
         "kind": "skill", "operator": "OR", "alternatives": ["Java"],
-        "strength": "MUST", "source": "inferred", "source_text": "必须熟悉 Java",
+        "strength": "PLUS", "source": "inferred", "source_text": "必须熟悉 Java",
     }]
 
     # 结构化生成失败 → 退化为单文本，且不返回 constraints（调用方保留旧硬条件）。
@@ -497,7 +505,7 @@ def _dual_manager(tmp_path, *, call_counts: dict) -> AiProviderManager:
         ),
         AiConnection(
             connection_id="c2", provider_id="kimi_code", display_name="Kimi Code",
-            api_key=SecretStr("k"), models={ModelRole.FAST_TEXT: "kimi-for-coding"},
+            api_key=SecretStr("k"), models={ModelRole.FAST_TEXT: "k3"},
             probed_roles=frozenset({ModelRole.FAST_TEXT}),
         ),
     ]))
@@ -517,4 +525,82 @@ async def test_batch_backfill_never_calls_kimi_code_second_connection(factory, t
     result = await service.backfill_candidate_profiles()
     assert result["updated"] == 1
     assert call_counts["deepseek-v4-flash"] == 1
-    assert call_counts.get("kimi-for-coding", 0) == 0  # 批量回填不调用 Kimi Code
+    assert call_counts.get("k3", 0) == 0  # 批量回填不调用 Kimi Code
+
+
+class _ConcurrencyProbeLLM(FakeLLM):
+    """记录同时在飞的条数与峰值：用于验证回填确实按 concurrency 并发。"""
+
+    def __init__(self, *, delay: float = 0.05) -> None:
+        super().__init__()
+        self.delay = delay
+        self.in_flight = 0
+        self.peak = 0
+
+    async def complete_text(self, messages, **kwargs) -> str:
+        self.calls += 1
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            return self.text
+        finally:
+            self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_runs_concurrently_up_to_the_limit(factory) -> None:
+    """6 条、并发 3：同时在飞正好 3，统计与串行口径一致。"""
+    llm = _ConcurrencyProbeLLM()
+    service = BackfillService(factory, candidate_generator=CandidateProfileGenerator(llm))
+    for index in range(6):
+        _candidate(factory, parsed={"name": f"C{index}", "skills": ["Python"]})
+
+    progress: list[int] = []
+    result = await service.backfill_candidate_profiles(
+        concurrency=3, report=progress.append)
+
+    assert result == {"total": 6, "updated": 6, "skipped": 0, "failed": 0, "errors": []}
+    assert llm.peak == 3  # 确实并发了，且没有超过上限
+    assert progress[-1] == 100
+
+
+@pytest.mark.asyncio
+async def test_backfill_stays_serial_when_concurrency_is_one(factory) -> None:
+    llm = _ConcurrencyProbeLLM()
+    service = BackfillService(factory, candidate_generator=CandidateProfileGenerator(llm))
+    for index in range(3):
+        _candidate(factory, parsed={"name": f"C{index}", "skills": ["Python"]})
+
+    result = await service.backfill_candidate_profiles(concurrency=1)
+
+    assert result["updated"] == 3
+    assert llm.peak == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_circuit_breaker_aborts_concurrently(factory) -> None:
+    """并发下熔断同样生效：不再继续领条目，未领的剩余全部计入失败。"""
+    from kerui_recruit.providers.errors import FailureCategory, ProviderError
+
+    class _NoProviderLLM(FakeLLM):
+        async def complete_text(self, messages, **kwargs) -> str:
+            self.calls += 1
+            raise ProviderError(
+                code="E_AI_NO_PROVIDER", retryable=False, user_message="没有可用的 AI 服务",
+                category=FailureCategory.UNKNOWN, switchable=False,
+            )
+
+    llm = _NoProviderLLM()
+    service = BackfillService(factory, candidate_generator=CandidateProfileGenerator(llm))
+    for index in range(10):
+        _candidate(factory, parsed={"name": f"C{index}", "skills": ["Python"]})
+
+    result = await service.backfill_candidate_profiles(concurrency=2)
+
+    assert result["total"] == 10  # 熔断后 remaining 补齐，进度不会停在中间
+    assert result["updated"] == 0
+    assert result["failed"] == 10
+    assert llm.calls < 10  # 命中熔断后不再空转
+    aborted = [entry for entry in result["errors"] if entry["error"] == "BatchAborted"]
+    assert len(aborted) == 1 and aborted[0]["code"] == "E_AI_NO_PROVIDER"

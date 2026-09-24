@@ -418,11 +418,19 @@ function fakeApi(): RecruitmentApi {
     listJds: async () => [],
     listJdsPage: async () => ({ items: [], total: 0, page: 1, page_size: 10, has_more: false }),
     updateCandidateField: async (candidateId, field, value) => ({ candidate_id: candidateId, revision_id: "revision-1", field, value }),
+    updateCommunicationNote: async (candidateId, note) => ({ candidate_id: candidateId, communication_note: note.trim() || null }),
     updateCandidateParsed: async (candidateId) => ({ candidate_id: candidateId, revision_id: "revision-1", updated_fields: [] }),
     updateJdParsed: async (jdId, parsedData) => ({ jd_id: jdId, revision_id: "revision-1", field: "parsed_data", value: parsedData }),
-    dailyFollowupToday: async () => ({ followup: [], interview: [] }),
+    dailyFollowupToday: async () => ({ followup: [], interview: [], reminders: [] }),
+    checkDailyTodo: async (input) => ({ date: "2026-09-20", item_key: input.item_key, done: input.done }),
+    createCandidateReminder: async (input) => ({
+      id: "rem-1", candidate_id: input.candidate_id, name: "测试候选人", content: input.content, done: false,
+    }),
+    completeCandidateReminder: async (reminderId) => ({
+      id: reminderId, candidate_id: "candidate-1", name: "测试候选人", content: "回访", done: true,
+    }),
     regenerateCandidateProfile: async () => ({ generated: true, summary: "测试画像", input_hash: "hash" }),
-    parseJdConstraints: async () => ({ constraints: [] }),
+    parseJdConstraints: async () => ({ constraints: [], min_years: null, years_stated: false }),
     deleteCandidate: async (candidateId) => ({ candidate_id: candidateId, deleted: true }),
     deleteJd: async (jdId) => ({ jd_id: jdId, deleted: true }),
     bulkDeleteCandidates: async () => ({ results: [], succeeded: 0, failed: 0 }),
@@ -527,9 +535,9 @@ function fakeApi(): RecruitmentApi {
     searchBdLeads: async () => [],
     searchLeadsForCandidate: async () => [],
     updateLeadStatus: async () => ({ id: "lead-1", source: "web", company_name: "某公司", job_title: null, raw_snippet: null, url: null, status: "已联系" }),
-    runBdAgent: async () => ({ session_id: "session-1", leads: [] }),
-    runBdAgentStream: async () => ({ session_id: "session-1", leads: [] }),
-    followUpBdAgent: async () => ({ session_id: "session-1", leads: [] }),
+    runBdAgent: async () => ({ session_id: "session-1", leads: [], degraded_reason: null }),
+    runBdAgentStream: async () => ({ session_id: "session-1", leads: [], degraded_reason: null }),
+    followUpBdAgent: async () => ({ session_id: "session-1", leads: [], degraded_reason: null }),
     createCase: async () => ({ id: "case-1", candidate_id: "candidate-1", jd_id: "jd-1", stage: "待评估", note: null }),
     listCasesPage: async () => ({ items: [], total: 0, page: 1, page_size: 20, has_more: false }),
     getCase: async () => ({
@@ -680,8 +688,46 @@ describe("reviewed desktop reliability", () => {
     await user.click(screen.getByText("精确筛选"));
     await user.selectOptions(screen.getByLabelText("最低学历"), "MASTER");
     await user.click(screen.getByRole("button", { name: "搜索" }));
-    expect(api.searchCandidates).toHaveBeenCalledWith("", { highest_degree: "MASTER" }, { mode: "hybrid", operator: "smart", rewriteEnabled: false, searchBody: false });
+    // 纯筛选（无查询词）不传 limit：由 client 按「返回全部匹配」处理，不能被向量/混合的默认条数截断。
+    expect(api.searchCandidates).toHaveBeenCalledWith("", { highest_degree: "MASTER" }, { mode: "hybrid", operator: "smart", rewriteEnabled: false, searchBody: false, parseEnabled: false });
     expect(await screen.findByText("没有符合条件的候选人")).toBeVisible();
+  });
+
+  test("dropping inferred conditions re-searches with an explicit empty filter", async () => {
+    const api = fakeApi();
+    // 解析出的「现居上海」是推断条件；本次空结果应被识别为可能是解析误判。
+    const response = {
+      items: [],
+      degraded_reasons: [],
+      empty_reason: "no_match",
+      query_plan: {
+        operator: "smart" as const,
+        rewrite_requested: false,
+        rewrite_status: "disabled" as const,
+        semantic_query: null,
+        parsed_plan_source: "rule" as const,
+        keyword_terms: "Java",
+        unparsed_terms: [],
+        effective_conditions: [
+          { field: "locations", value: "上海", source: "rule" as const, confidence: "inferred" },
+        ],
+      },
+    };
+    const sentFilters: unknown[] = [];
+    api.searchCandidates = vi.fn(async (_query: string, filters?: unknown) => {
+      sentFilters.push(filters);
+      return response;
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.type(screen.getByLabelText("人才搜索"), "上海 Java");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    expect(await screen.findByRole("button", { name: "去掉推断条件重搜" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "去掉推断条件重搜" }));
+    // 去掉推断条件＝给该字段下发显式空值，让后端把文本解析出的同类条件一起压掉。
+    await vi.waitFor(() => expect(sentFilters).toHaveLength(2));
+    expect(sentFilters[1]).toEqual({ locations: [] });
   });
 
   test("uses the document viewing service for Word details without downloading", async () => {
@@ -786,10 +832,11 @@ describe("desktop recruitment workflow", () => {
     await user.type(screen.getByLabelText("现居城市"), "上海、苏州");
     await user.type(screen.getByLabelText("意向城市"), "北京");
     await user.type(screen.getByLabelText("排除技能"), "外包");
+    await user.type(screen.getByLabelText("沟通文本"), "沟通主动");
     await user.type(screen.getByLabelText("人才搜索"), "Python");
     await user.click(screen.getByRole("button", { name: "搜索" }));
     expect(receivedFilters).toEqual({ min_years: 5, locations: ["上海", "苏州"],
-      preferred_locations: ["北京"], exclude_skills: ["外包"] });
+      preferred_locations: ["北京"], exclude_skills: ["外包"], communication_note: "沟通主动" });
     // 搜索后只展示搜索结果（即使为空），候选人列表隐藏，不出现矛盾区域。
     expect(screen.getByText("没有符合条件的候选人")).toBeVisible();
     expect(screen.queryByText("第1页候选人")).not.toBeInTheDocument();
@@ -824,6 +871,30 @@ describe("desktop recruitment workflow", () => {
     await user.click(screen.getByRole("button", { name: "导入并解析" }));
 
     expect(await screen.findByText("rev-1")).toBeVisible();
+  });
+
+  test("refreshes the paged JD list after importing a JD", async () => {
+    const user = userEvent.setup();
+    const api = fakeApi();
+    const calls = { page: 0 };
+    api.listJdsPage = async () => {
+      calls.page += 1;
+      return { items: [], total: 0, page: 1, page_size: 10, has_more: false };
+    };
+    render(<App api={api} />);
+
+    await user.click(screen.getByText("JD 管理"));
+    await screen.findByText("暂无 JD，先在上方导入。");
+    const before = calls.page;
+
+    await user.click(screen.getByRole("button", { name: "导入 JD" }));
+    await user.type(screen.getByLabelText("JD 原文"), "负责支付系统，3年 Java");
+    await user.click(screen.getByRole("button", { name: "导入并解析" }));
+    await screen.findByText("rev-1");
+
+    // 导入后必须重新拉分页列表：只刷 loadJds() 会更新头部「共 N 个在招岗位」，
+    // 而「岗位列表 N 个」仍停在导入前（头部 1、列表 0，e2e 实测）。
+    await waitFor(() => expect(calls.page).toBeGreaterThan(before));
   });
 
   test("imports a Word JD file", async () => {
@@ -927,8 +998,8 @@ describe("desktop recruitment workflow", () => {
       status: "SUCCESS",
       progress: 100,
       result_ref: JSON.stringify([
-        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", reasons: ["支付经验匹配"], cautions: [] },
-        { match_result_id: "result-2", candidate_id: "candidate-2", jd_revision_id: "rev-1", verdict: "pending", reasons: [], cautions: ["复核超时（单条调用超时）"], failed: true, error: "TimeoutError" },
+        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", project_match: ["支付经验匹配"], risks: [] },
+        { match_result_id: "result-2", candidate_id: "candidate-2", jd_revision_id: "rev-1", verdict: "pending", project_match: [], risks: ["复核超时（单条调用超时）"], failed: true, error: "TimeoutError" },
       ]),
       error_message: null,
     }));
@@ -948,6 +1019,52 @@ describe("desktop recruitment workflow", () => {
     expect(screen.getByText(/（复核失败 1）/)).toBeVisible();
     // 已成功的复核可以重跑（后端换新幂等键）。
     expect(screen.getByRole("button", { name: "重新复核" })).toBeVisible();
+  });
+
+  test("orders JD match rows by review verdict instead of the base match tier", async () => {
+    const api = fakeApi();
+    const jd = {
+      jd_id: "jd-1", revision_id: "rev-1", company: "某金融", title: "Java 后端工程师",
+      status: "READY", jd_status: "OPEN", ai_category: null, location: null, min_years: null,
+      parsed_data: null, source_text: "Java 后端",
+    };
+    api.listJdsPage = async () => ({ items: [jd], total: 1, page: 1, page_size: 10, has_more: false });
+    api.matchJd = async () => ({
+      run_id: "run-1",
+      items: [
+        // 基础分层「方向推荐」但复核判为待核：按分层优先排会被顶到所有「推荐」前面。
+        { candidate_id: "c1", revision_id: "r1", name: "甲", phone: null, reasons: [], parsed_data: null, content: "", score: 0.95, matched_channels: [], total_years: 6, highest_degree: null, location: null, result_id: "result-1", match_tier: "recommend" },
+        { candidate_id: "c2", revision_id: "r2", name: "乙", phone: null, reasons: [], parsed_data: null, content: "", score: 0.9, matched_channels: [], total_years: 5, highest_degree: null, location: null, result_id: "result-2", match_tier: "needs_review" },
+        { candidate_id: "c3", revision_id: "r3", name: "丙", phone: null, reasons: [], parsed_data: null, content: "", score: 0.8, matched_channels: [], total_years: 4, highest_degree: null, location: null, result_id: "result-3", match_tier: "needs_review" },
+      ],
+    });
+    api.startAiReview = vi.fn(async () => ({ review_id: "review-1", status: "QUEUED" }));
+    api.getAiReview = vi.fn(async () => ({
+      status: "SUCCESS",
+      progress: 100,
+      result_ref: JSON.stringify([
+        { match_result_id: "result-1", candidate_id: "c1", jd_revision_id: "rev-1", verdict: "pending", project_match: [], risks: [] },
+        { match_result_id: "result-2", candidate_id: "c2", jd_revision_id: "rev-1", verdict: "recommend", project_match: ["有支付证据"], risks: [] },
+        { match_result_id: "result-3", candidate_id: "c3", jd_revision_id: "rev-1", verdict: "reject", project_match: [], risks: ["证据不足"] },
+      ]),
+      error_message: null,
+    }));
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("JD 管理"));
+    await user.click(screen.getByRole("button", { name: "匹配" }));
+    await screen.findByText("甲");
+    await user.click(screen.getByRole("button", { name: "AI 深度复核" }));
+    await screen.findByText("有支付证据");
+
+    const table = screen.getByText("乙").closest("table")!;
+    const names = within(table)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelector(".col-name strong")?.textContent);
+    // 结论优先：推荐（乙）→ 待核（甲）→ 不推荐（丙）；基础分层只做同结论内的次级键。
+    expect(names).toEqual(["乙", "甲", "丙"]);
   });
 
   test("loads the recruitment dashboard", async () => {
@@ -1243,6 +1360,49 @@ describe("candidate education and profile editing", () => {
     expect(within(dialog).getByRole("button", { name: "重新生成" })).toBeVisible();
   });
 
+  test("shows profile generation stages while regenerating", async () => {
+    // 最坏要等 150 秒：只有转圈看不出「快好了」和「刚开始第二次模型调用」，
+    // 而后者意味着还要再等一整个轮次。阶段文案由服务端推（见 api/profile_stream.py）。
+    const api = fakeApi();
+    api.listCandidates = vi.fn(async () => [{
+      candidate_id: "candidate-1",
+      revision_id: "revision-1",
+      display_name: "张三",
+      total_years: 6,
+      highest_degree: "MASTER",
+      location: "上海",
+      status: "AVAILABLE",
+      revision_status: "READY",
+      phone: null,
+      original_filename: "简历.pdf",
+      parsed_data: { name: "张三", ai_profile_summary: "资深后端工程师", ai_profile_source: "ai", ai_profile_stale: false },
+    }]);
+    let emitStage: ((progress: { stage: string; message: string }) => void) | undefined;
+    let finish: ((value: { generated: boolean; summary: string }) => void) | undefined;
+    api.regenerateCandidateProfile = vi.fn((_id: string, _instruction?: string, onStage?: typeof emitStage) => {
+      emitStage = onStage;
+      return new Promise((resolve) => { finish = resolve; });
+    }) as unknown as typeof api.regenerateCandidateProfile;
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByRole("button", { name: "显示候选人" }));
+    await user.click(screen.getByRole("button", { name: "资深后端工程师" }));
+
+    const dialog = screen.getByRole("dialog", { name: "编辑 AI 画像" });
+    await user.click(within(dialog).getByRole("button", { name: "重新生成" }));
+    await act(async () => { emitStage?.({ stage: "draft", message: "正在生成画像初稿…" }); });
+    expect(within(dialog).getByRole("status")).toHaveTextContent("正在生成画像初稿…");
+
+    await act(async () => { emitStage?.({ stage: "repair", message: "初稿未通过校验，正在定向重写…" }); });
+    expect(within(dialog).getByRole("status")).toHaveTextContent("正在定向重写");
+
+    await act(async () => { finish?.({ generated: true, summary: "新的画像" }); });
+    expect(within(dialog).getByLabelText("画像正文")).toHaveValue("新的画像");
+    // 生成结束后不再残留阶段提示。
+    expect(within(dialog).queryByRole("status")).toBeNull();
+  });
+
   test("does not render legacy parse-and-direction button for ready candidates", async () => {
     const api = fakeApi();
     api.listCandidates = vi.fn(async () => [{
@@ -1398,8 +1558,8 @@ describe("candidate match AI review", () => {
       status: "SUCCESS",
       progress: 100,
       result_ref: JSON.stringify([
-        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", reasons: ["有证据"], cautions: [] },
-        { match_result_id: "result-2", candidate_id: "candidate-1", jd_revision_id: "rev-2", verdict: "reject", reasons: [], cautions: ["无证据"] },
+        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", project_match: ["有证据"], risks: [] },
+        { match_result_id: "result-2", candidate_id: "candidate-1", jd_revision_id: "rev-2", verdict: "reject", project_match: [], risks: ["无证据"] },
       ]),
       error_message: null,
     }));
@@ -1434,8 +1594,8 @@ describe("candidate match AI review", () => {
       status: "SUCCESS",
       progress: 100,
       result_ref: JSON.stringify([
-        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", reasons: ["有证据"], cautions: [] },
-        { match_result_id: "result-2", candidate_id: "candidate-1", jd_revision_id: "rev-2", verdict: "pending", reasons: [], cautions: ["复核失败：TimeoutError"], failed: true, error: "TimeoutError" },
+        { match_result_id: "result-1", candidate_id: "candidate-1", jd_revision_id: "rev-1", verdict: "recommend", project_match: ["有证据"], risks: [] },
+        { match_result_id: "result-2", candidate_id: "candidate-1", jd_revision_id: "rev-2", verdict: "pending", project_match: [], risks: ["复核失败：TimeoutError"], failed: true, error: "TimeoutError" },
       ]),
       error_message: null,
     }));
@@ -1517,7 +1677,7 @@ describe("candidate match AI review", () => {
       status: "SUCCESS",
       progress: 100,
       result_ref: JSON.stringify([
-        { match_result_id: "result-2", candidate_id: "candidate-2", jd_revision_id: "jdrev-2", verdict: "recommend", reasons: ["命中算法"], cautions: [] },
+        { match_result_id: "result-2", candidate_id: "candidate-2", jd_revision_id: "jdrev-2", verdict: "recommend", project_match: ["命中算法"], risks: [] },
       ]),
       error_message: null,
     }));
@@ -1575,7 +1735,7 @@ describe("JD candidate profile saving", () => {
     const api = jdApi("旧画像");
     const updateJdParsed = vi.fn(async () => ({ jd_id: "jd-1", revision_id: "rev-1", field: "parsed_data", value: {} }));
     api.updateJdParsed = updateJdParsed;
-    const parseJdConstraints = vi.fn(async () => ({ constraints: [] }));
+    const parseJdConstraints = vi.fn(async () => ({ constraints: [], min_years: null, years_stated: false }));
     api.parseJdConstraints = parseJdConstraints;
 
     const user = await openJdProfile(api, "旧画像");
@@ -1593,7 +1753,7 @@ describe("JD candidate profile saving", () => {
     const updateJdParsed = vi.fn(async () => ({ jd_id: "jd-1", revision_id: "rev-1", field: "parsed_data", value: {} }));
     api.updateJdParsed = updateJdParsed;
     const constraints = [{ kind: "skill", operator: "OR", alternatives: ["Java"], strength: "MUST", source: "inferred", source_text: "必须熟悉 Java" }];
-    const parseJdConstraints = vi.fn(async () => ({ constraints }));
+    const parseJdConstraints = vi.fn(async () => ({ constraints, min_years: null, years_stated: false }));
     api.parseJdConstraints = parseJdConstraints;
 
     const user = await openJdProfile(api, "旧画像");
@@ -1608,5 +1768,44 @@ describe("JD candidate profile saving", () => {
       candidate_profile: "必须熟悉 Java",
       exact_constraints: constraints,
     });
+  });
+
+  test("submits the model-parsed min_years with the profile", async () => {
+    const api = jdApi("旧画像");
+    const updateJdParsed = vi.fn(async () => ({ jd_id: "jd-1", revision_id: "rev-1", field: "parsed_data", value: {} }));
+    api.updateJdParsed = updateJdParsed;
+    // 年限由模型解析，不在 exact_constraints 里，必须与画像一起提交才会生效。
+    api.parseJdConstraints = vi.fn(async () => ({ constraints: [], min_years: 5, years_stated: true }));
+
+    const user = await openJdProfile(api, "旧画像");
+    const textarea = await screen.findByLabelText("候选人画像要求");
+    await user.clear(textarea);
+    await user.type(textarea, "5 年以上后端经验");
+    await user.click(screen.getByRole("button", { name: "保存画像" }));
+
+    await waitFor(() => expect(updateJdParsed).toHaveBeenCalledWith("jd-1", {
+      candidate_profile: "5 年以上后端经验",
+      exact_constraints: [],
+      min_years: 5,
+    }));
+  });
+
+  test("omits min_years when the profile does not state a year requirement", async () => {
+    const api = jdApi("旧画像");
+    const updateJdParsed = vi.fn(async () => ({ jd_id: "jd-1", revision_id: "rev-1", field: "parsed_data", value: {} }));
+    api.updateJdParsed = updateJdParsed;
+    // years_stated=false：画像没提年限，不能覆盖 JD 解析出的原值。
+    api.parseJdConstraints = vi.fn(async () => ({ constraints: [], min_years: null, years_stated: false }));
+
+    const user = await openJdProfile(api, "旧画像");
+    const textarea = await screen.findByLabelText("候选人画像要求");
+    await user.clear(textarea);
+    await user.type(textarea, "熟悉 Java 与微服务");
+    await user.click(screen.getByRole("button", { name: "保存画像" }));
+
+    await waitFor(() => expect(updateJdParsed).toHaveBeenCalledWith("jd-1", {
+      candidate_profile: "熟悉 Java 与微服务",
+      exact_constraints: [],
+    }));
   });
 });
